@@ -1,0 +1,6 @@
+add_library(EmilCAE_Core STATIC
+    src/Version.cpp
+)
+
+target_include_directories(EmilCAE_Core PUBLIC include)
+target_compile_features(EmilCAE_Core PUBLIC cxx_std_20)

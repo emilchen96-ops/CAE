@@ -1,0 +1,5 @@
+add_library(EmilCAE_SolverInterface INTERFACE)
+
+target_include_directories(EmilCAE_SolverInterface INTERFACE include)
+target_link_libraries(EmilCAE_SolverInterface INTERFACE EmilCAE_Core)
+target_compile_features(EmilCAE_SolverInterface INTERFACE cxx_std_20)
