@@ -5,6 +5,7 @@
 #include "GmshMesher.hpp"
 #include "HmAsciiMeshIo.hpp"
 #include "MaterialEditorDialog.hpp"
+#include "NamedSelectionResolver.hpp"
 #include "SectionAssignmentDialog.hpp"
 #include "SolidSectionEditorDialog.hpp"
 
@@ -46,6 +47,7 @@ constexpr int GeometryObjectIdRole = Qt::UserRole + 1;
 constexpr int MeshObjectIdRole = Qt::UserRole + 2;
 constexpr int MaterialIdRole = Qt::UserRole + 3;
 constexpr int SolidSectionIdRole = Qt::UserRole + 4;
+constexpr int NamedSelectionIdRole = Qt::UserRole + 5;
 
 QString fromUtf8(const std::string& value) {
     return QString::fromUtf8(value.data(),
@@ -117,6 +119,42 @@ QString selectionModeName(SelectionMode mode) {
     return {};
 }
 
+emilcae::core::NamedSelectionEntityType namedSelectionEntityType(
+    SelectionMode mode) {
+    using emilcae::core::NamedSelectionEntityType;
+    switch (mode) {
+    case SelectionMode::Object:
+        return NamedSelectionEntityType::Object;
+    case SelectionMode::Vertex:
+        return NamedSelectionEntityType::Vertex;
+    case SelectionMode::Edge:
+        return NamedSelectionEntityType::Edge;
+    case SelectionMode::Face:
+        return NamedSelectionEntityType::Face;
+    case SelectionMode::Solid:
+        return NamedSelectionEntityType::Solid;
+    }
+    return NamedSelectionEntityType::Object;
+}
+
+QString namedSelectionEntityName(
+    emilcae::core::NamedSelectionEntityType entityType) {
+    using emilcae::core::NamedSelectionEntityType;
+    switch (entityType) {
+    case NamedSelectionEntityType::Object:
+        return QCoreApplication::translate("WorkbenchMainWindow", "对象");
+    case NamedSelectionEntityType::Vertex:
+        return QCoreApplication::translate("WorkbenchMainWindow", "点");
+    case NamedSelectionEntityType::Edge:
+        return QCoreApplication::translate("WorkbenchMainWindow", "边");
+    case NamedSelectionEntityType::Face:
+        return QCoreApplication::translate("WorkbenchMainWindow", "面");
+    case NamedSelectionEntityType::Solid:
+        return QCoreApplication::translate("WorkbenchMainWindow", "实体");
+    }
+    return {};
+}
+
 } // namespace
 
 WorkbenchMainWindow::WorkbenchMainWindow(QWidget* parent)
@@ -125,6 +163,22 @@ WorkbenchMainWindow::WorkbenchMainWindow(QWidget* parent)
     resize(1440, 900);
 
     createCentralWorkspace();
+    namedSelectionManager_ =
+        std::make_unique<emilcae::core::NamedSelectionManager>(
+            [this](int objectId) {
+                return occViewWidget_ != nullptr &&
+                       occViewWidget_->findGeometryObject(objectId) != nullptr;
+            });
+    namedSelectionResolver_ = std::make_unique<NamedSelectionResolver>(
+        [this](int objectId) {
+            const GeometryObject* object = occViewWidget_ != nullptr
+                ? occViewWidget_->findGeometryObject(objectId)
+                : nullptr;
+            return object != nullptr
+                ? std::optional<NamedSelectionGeometry>(
+                      NamedSelectionGeometry{object->shape, object->visible})
+                : std::nullopt;
+        });
     createDockWidgets();
     createActions();
     createMenus();
@@ -169,6 +223,10 @@ void WorkbenchMainWindow::createActions() {
     deleteSectionAction_ = new QAction(tr("删除实体截面"), this);
     assignSectionAction_ = new QAction(tr("指派实体截面"), this);
     unassignSectionAction_ = new QAction(tr("取消截面指派"), this);
+    createNamedSelectionAction_ =
+        new QAction(tr("创建命名选择集"), this);
+    clearCurrentSelectionAction_ =
+        new QAction(tr("清除当前选择"), this);
     objectSelectionAction_ = new QAction(tr("对象"), this);
     vertexSelectionAction_ = new QAction(tr("点"), this);
     edgeSelectionAction_ = new QAction(tr("边"), this);
@@ -240,6 +298,10 @@ void WorkbenchMainWindow::createActions() {
             this, &WorkbenchMainWindow::assignSectionToSelectedObject);
     connect(unassignSectionAction_, &QAction::triggered,
             this, &WorkbenchMainWindow::unassignSectionFromSelectedObject);
+    connect(createNamedSelectionAction_, &QAction::triggered,
+            this, &WorkbenchMainWindow::createNamedSelection);
+    connect(clearCurrentSelectionAction_, &QAction::triggered,
+            occViewWidget_, &OccViewWidget::clearSelection);
     connect(objectSelectionAction_, &QAction::triggered, this, [this] {
         switchSelectionMode(SelectionMode::Object, tr("对象"));
     });
@@ -358,6 +420,9 @@ void WorkbenchMainWindow::createMenus() {
     selectionMenu->addAction(edgeSelectionAction_);
     selectionMenu->addAction(faceSelectionAction_);
     selectionMenu->addAction(solidSelectionAction_);
+    selectionMenu->addSeparator();
+    selectionMenu->addAction(createNamedSelectionAction_);
+    selectionMenu->addAction(clearCurrentSelectionAction_);
 
     auto* meshMenu = menuBar()->addMenu(tr("网格"));
     meshMenu->addAction(generateMeshAction_);
@@ -419,8 +484,10 @@ void WorkbenchMainWindow::createDockWidgets() {
     auto* modelRoot = new QStandardItem(tr("模型"));
     geometryRootItem_ = new QStandardItem(tr("几何"));
     meshRootItem_ = new QStandardItem(tr("网格"));
+    namedSelectionRootItem_ = new QStandardItem(tr("命名选择集"));
     modelRoot->appendRow(geometryRootItem_);
     modelRoot->appendRow(meshRootItem_);
+    modelRoot->appendRow(namedSelectionRootItem_);
     projectRoot->appendRow(modelRoot);
     materialRootItem_ = new QStandardItem(tr("材料"));
     projectRoot->appendRow(materialRootItem_);
@@ -582,6 +649,7 @@ void WorkbenchMainWindow::addGeometryTreeItem(int objectId,
     projectTree_->setCurrentIndex(item->index());
     selectedMaterialId_ = -1;
     selectedSectionId_ = -1;
+    selectedNamedSelectionId_ = -1;
     selectedMeshObjectId_ = -1;
     selectedGeometryObjectId_ = objectId;
     updateMaterialActionStates();
@@ -614,12 +682,26 @@ void WorkbenchMainWindow::handleProjectItemChanged(QStandardItem* item) {
 void WorkbenchMainWindow::handleProjectItemClicked(
     const QModelIndex& index) {
     QStandardItem* item = projectModel_->itemFromIndex(index);
+    const int currentNamedSelectionId = namedSelectionId(item);
+    if (currentNamedSelectionId >= 0) {
+        selectedGeometryObjectId_ = -1;
+        selectedMeshObjectId_ = -1;
+        selectedMaterialId_ = -1;
+        selectedSectionId_ = -1;
+        selectedNamedSelectionId_ = currentNamedSelectionId;
+        locateSelectedNamedSelection(false);
+        updateMaterialActionStates();
+        updateSectionActionStates();
+        return;
+    }
     const int currentSectionId = sectionId(item);
     if (currentSectionId >= 0) {
         selectedGeometryObjectId_ = -1;
         selectedMeshObjectId_ = -1;
+        selectedNamedSelectionId_ = -1;
         selectedMaterialId_ = -1;
         selectedSectionId_ = currentSectionId;
+        selectedNamedSelectionId_ = -1;
         occViewWidget_->clearSelection();
         showSectionProperties(currentSectionId);
         updateMaterialActionStates();
@@ -630,8 +712,10 @@ void WorkbenchMainWindow::handleProjectItemClicked(
     if (currentMaterialId >= 0) {
         selectedGeometryObjectId_ = -1;
         selectedMeshObjectId_ = -1;
+        selectedNamedSelectionId_ = -1;
         selectedMaterialId_ = currentMaterialId;
         selectedSectionId_ = -1;
+        selectedNamedSelectionId_ = -1;
         occViewWidget_->clearSelection();
         showMaterialProperties(currentMaterialId);
         if (const emilcae::core::Material* material =
@@ -647,6 +731,7 @@ void WorkbenchMainWindow::handleProjectItemClicked(
     if (currentMeshId >= 0) {
         selectedMaterialId_ = -1;
         selectedSectionId_ = -1;
+        selectedNamedSelectionId_ = -1;
         const MeshObject* mesh = occViewWidget_->findMesh(currentMeshId);
         if (mesh != nullptr) {
             selectedMeshObjectId_ = currentMeshId;
@@ -664,6 +749,7 @@ void WorkbenchMainWindow::handleProjectItemClicked(
     if (objectId >= 0) {
         selectedMaterialId_ = -1;
         selectedSectionId_ = -1;
+        selectedNamedSelectionId_ = -1;
         selectedMeshObjectId_ = -1;
         selectedGeometryObjectId_ = objectId;
         updateMaterialActionStates();
@@ -685,6 +771,8 @@ void WorkbenchMainWindow::handleProjectItemClicked(
     selectedMeshObjectId_ = -1;
     selectedMaterialId_ = -1;
     selectedSectionId_ = -1;
+    selectedNamedSelectionId_ = -1;
+    occViewWidget_->clearNamedSelectionHighlight();
     updateMaterialActionStates();
     updateSectionActionStates();
     if (item != nullptr) {
@@ -696,6 +784,13 @@ void WorkbenchMainWindow::handleProjectItemClicked(
 
 void WorkbenchMainWindow::handleProjectItemDoubleClicked(
     const QModelIndex& index) {
+    const int currentNamedSelectionId =
+        namedSelectionId(projectModel_->itemFromIndex(index));
+    if (currentNamedSelectionId >= 0) {
+        selectedNamedSelectionId_ = currentNamedSelectionId;
+        locateSelectedNamedSelection(true);
+        return;
+    }
     const int currentMaterialId =
         materialId(projectModel_->itemFromIndex(index));
     if (currentMaterialId >= 0) {
@@ -717,6 +812,45 @@ void WorkbenchMainWindow::showProjectContextMenu(
     const QPoint& position) {
     const QModelIndex index = projectTree_->indexAt(position);
     QStandardItem* item = projectModel_->itemFromIndex(index);
+    if (item == namedSelectionRootItem_) {
+        QMenu menu(this);
+        menu.addAction(createNamedSelectionAction_);
+        menu.exec(projectTree_->viewport()->mapToGlobal(position));
+        return;
+    }
+    const int currentNamedSelectionId = namedSelectionId(item);
+    if (currentNamedSelectionId >= 0) {
+        selectedNamedSelectionId_ = currentNamedSelectionId;
+        selectedMaterialId_ = -1;
+        selectedSectionId_ = -1;
+        selectedGeometryObjectId_ = -1;
+        selectedMeshObjectId_ = -1;
+        QMenu menu(this);
+        QAction* locateAction = menu.addAction(tr("定位并高亮"));
+        QAction* renameAction = menu.addAction(tr("重命名"));
+        menu.addSeparator();
+        QAction* replaceAction = menu.addAction(tr("用当前选择替换"));
+        QAction* addAction = menu.addAction(tr("添加当前选择"));
+        QAction* removeItemsAction = menu.addAction(tr("移除当前选择"));
+        menu.addSeparator();
+        QAction* deleteAction = menu.addAction(tr("删除"));
+        QAction* chosen =
+            menu.exec(projectTree_->viewport()->mapToGlobal(position));
+        if (chosen == locateAction) {
+            locateSelectedNamedSelection(true);
+        } else if (chosen == renameAction) {
+            renameSelectedNamedSelection();
+        } else if (chosen == replaceAction) {
+            replaceSelectedNamedSelectionItems();
+        } else if (chosen == addAction) {
+            addSelectedNamedSelectionItems();
+        } else if (chosen == removeItemsAction) {
+            removeSelectedNamedSelectionItems();
+        } else if (chosen == deleteAction) {
+            deleteSelectedNamedSelection();
+        }
+        return;
+    }
     if (item == sectionRootItem_) {
         QMenu menu(this);
         menu.addAction(newSectionAction_);
@@ -727,6 +861,7 @@ void WorkbenchMainWindow::showProjectContextMenu(
     if (currentSectionId >= 0) {
         selectedSectionId_ = currentSectionId;
         selectedMaterialId_ = -1;
+        selectedNamedSelectionId_ = -1;
         selectedGeometryObjectId_ = -1;
         selectedMeshObjectId_ = -1;
         updateMaterialActionStates();
@@ -751,6 +886,7 @@ void WorkbenchMainWindow::showProjectContextMenu(
     const int currentMaterialId = materialId(item);
     if (currentMaterialId >= 0) {
         selectedMaterialId_ = currentMaterialId;
+        selectedNamedSelectionId_ = -1;
         selectedGeometryObjectId_ = -1;
         selectedMeshObjectId_ = -1;
         updateMaterialActionStates();
@@ -970,9 +1106,16 @@ void WorkbenchMainWindow::deleteGeometryObject(QStandardItem* item) {
     const int associatedMeshId = associatedMesh != nullptr
         ? associatedMesh->id
         : -1;
+    const std::size_t namedSelectionReferences =
+        namedSelectionManager_->selectionsReferencingGeometry(objectId).size();
+    const QString question = namedSelectionReferences > 0
+        ? tr("该几何对象正在被 %1 个命名选择集引用。\n"
+             "删除后相关成员将变为失效引用，是否继续？")
+              .arg(namedSelectionReferences)
+        : tr("确定要从当前场景中删除对象“%1”吗？").arg(name);
     if (QMessageBox::question(
             this, tr("删除几何对象"),
-            tr("确定要从当前场景中删除对象“%1”吗？").arg(name),
+            question,
             QMessageBox::Yes | QMessageBox::No,
             QMessageBox::No) != QMessageBox::Yes) {
         return;
@@ -1002,6 +1145,7 @@ void WorkbenchMainWindow::deleteGeometryObject(QStandardItem* item) {
     clearAllGeometryAction_->setEnabled(
         occViewWidget_->geometryObjectCount() > 0);
     updateAssignmentDisplays();
+    updateNamedSelectionDisplays();
     updateSectionActionStates();
     messageLog_->appendPlainText(tr("已从场景删除几何对象：%1").arg(name));
     statusBar()->showMessage(tr("几何对象已删除"), 3000);
@@ -1011,10 +1155,26 @@ void WorkbenchMainWindow::clearAllGeometryObjects() {
     if (occViewWidget_->geometryObjectCount() == 0) {
         return;
     }
+    std::size_t affectedSelections = 0;
+    for (const emilcae::core::NamedSelection& selection :
+         namedSelectionManager_->namedSelections()) {
+        if (std::any_of(selection.items.cbegin(), selection.items.cend(),
+                        [this](const emilcae::core::NamedSelectionItem& item) {
+                            return geometryItems_.contains(
+                                item.geometryObjectId);
+                        })) {
+            ++affectedSelections;
+        }
+    }
+    QString question = tr("确定要清空当前场景中的所有几何对象吗？\n"
+                          "此操作不会删除磁盘上的原始文件。");
+    if (affectedSelections > 0) {
+        question += tr("\n\n有 %1 个命名选择集引用当前几何。清空后相关成员将变为失效引用。")
+                        .arg(affectedSelections);
+    }
     if (QMessageBox::question(
             this, tr("清空几何对象"),
-            tr("确定要清空当前场景中的所有几何对象吗？\n"
-               "此操作不会删除磁盘上的原始文件。"),
+            question,
             QMessageBox::Yes | QMessageBox::No,
             QMessageBox::No) != QMessageBox::Yes) {
         return;
@@ -1050,6 +1210,7 @@ void WorkbenchMainWindow::clearAllGeometryObjects() {
     showDefaultProperties();
     clearAllGeometryAction_->setEnabled(false);
     updateAssignmentDisplays();
+    updateNamedSelectionDisplays();
     updateSectionActionStates();
     setWindowTitle(tr("QTCAE 仿真工作台"));
     messageLog_->appendPlainText(tr("已清空所有几何对象。"));
@@ -1340,6 +1501,7 @@ void WorkbenchMainWindow::createMaterial(
     const QString name = fromUtf8(stored->name);
     addMaterialTreeItem(stored->id, name);
     selectedMaterialId_ = stored->id;
+    selectedNamedSelectionId_ = -1;
     selectedGeometryObjectId_ = -1;
     selectedMeshObjectId_ = -1;
     showMaterialProperties(stored->id);
@@ -1457,6 +1619,7 @@ void WorkbenchMainWindow::duplicateSelectedMaterial() {
     const QString name = fromUtf8(stored->name);
     addMaterialTreeItem(stored->id, name);
     selectedMaterialId_ = stored->id;
+    selectedNamedSelectionId_ = -1;
     showMaterialProperties(stored->id);
     updateMaterialActionStates();
     messageLog_->appendPlainText(tr("已创建材料：%1").arg(name));
@@ -1605,6 +1768,7 @@ void WorkbenchMainWindow::createSolidSection() {
     }
     addSectionTreeItem(section->id, fromUtf8(section->name));
     selectedSectionId_ = section->id;
+    selectedNamedSelectionId_ = -1;
     showSectionProperties(section->id);
     updateSectionActionStates();
     messageLog_->appendPlainText(
@@ -1694,6 +1858,7 @@ void WorkbenchMainWindow::duplicateSelectedSection() {
     }
     addSectionTreeItem(result.sectionId, name);
     selectedSectionId_ = result.sectionId;
+    selectedNamedSelectionId_ = -1;
     showSectionProperties(result.sectionId);
     updateSectionActionStates();
     messageLog_->appendPlainText(tr("已创建实体截面：%1").arg(name));
@@ -1915,6 +2080,339 @@ QString WorkbenchMainWindow::uniqueSectionCopyName(
     }
 }
 
+void WorkbenchMainWindow::createNamedSelection() {
+    std::vector<emilcae::core::NamedSelectionItem> items;
+    emilcae::core::NamedSelectionEntityType entityType;
+    QString error;
+    if (!currentNamedSelectionItems(items, entityType, error)) {
+        QMessageBox::information(this, tr("创建命名选择集"), error);
+        return;
+    }
+    bool accepted = false;
+    const QString name = QInputDialog::getText(
+        this, tr("创建命名选择集"), tr("名称："), QLineEdit::Normal,
+        uniqueNamedSelectionName(entityType), &accepted).trimmed();
+    if (!accepted) {
+        return;
+    }
+    const auto result = namedSelectionManager_->create(
+        toUtf8(name), entityType, items);
+    if (!result.success) {
+        QMessageBox::warning(this, tr("创建命名选择集失败"),
+                             namedSelectionErrorMessage(result.error));
+        return;
+    }
+    const auto* selection =
+        namedSelectionManager_->find(result.namedSelectionId);
+    if (selection == nullptr) {
+        return;
+    }
+    addNamedSelectionTreeItem(selection->id, fromUtf8(selection->name));
+    selectedNamedSelectionId_ = selection->id;
+    syncingTreeSelection_ = true;
+    occViewWidget_->clearSelection();
+    syncingTreeSelection_ = false;
+    showNamedSelectionProperties(selection->id);
+    messageLog_->appendPlainText(
+        tr("已创建命名选择集：%1").arg(fromUtf8(selection->name)));
+    statusBar()->showMessage(tr("命名选择集创建成功"), 3000);
+}
+
+void WorkbenchMainWindow::locateSelectedNamedSelection(
+    bool notifyHiddenObjects) {
+    const auto* selection =
+        namedSelectionManager_->find(selectedNamedSelectionId_);
+    if (selection == nullptr) {
+        return;
+    }
+    const NamedSelectionResolveResult resolved =
+        namedSelectionResolver_->resolve(*selection);
+    std::vector<TopoDS_Shape> visibleShapes;
+    std::size_t hiddenCount = 0;
+    for (const ResolvedNamedSelectionItem& item : resolved.validItems) {
+        if (item.sourceVisible) {
+            visibleShapes.push_back(item.shape);
+        } else {
+            ++hiddenCount;
+        }
+    }
+    syncingTreeSelection_ = true;
+    occViewWidget_->clearSelection();
+    if (!visibleShapes.empty()) {
+        occViewWidget_->highlightNamedSelection(visibleShapes);
+    }
+    if (QStandardItem* item =
+            namedSelectionItem(selectedNamedSelectionId_)) {
+        projectTree_->setCurrentIndex(item->index());
+    }
+    syncingTreeSelection_ = false;
+    showNamedSelectionProperties(selectedNamedSelectionId_);
+    if (notifyHiddenObjects && hiddenCount > 0) {
+        QMessageBox::information(
+            this, tr("命名选择集定位"),
+            tr("有 %1 个有效成员所属的几何对象当前处于隐藏状态，"
+               "这些成员未在视窗中高亮。")
+                .arg(hiddenCount));
+    }
+    statusBar()->showMessage(
+        tr("已定位命名选择集：%1；有效 %2，失效 %3，隐藏 %4")
+            .arg(fromUtf8(selection->name))
+            .arg(resolved.validItems.size())
+            .arg(resolved.invalidItems.size())
+            .arg(hiddenCount),
+        5000);
+}
+
+void WorkbenchMainWindow::renameSelectedNamedSelection() {
+    const auto* selection =
+        namedSelectionManager_->find(selectedNamedSelectionId_);
+    if (selection == nullptr) {
+        return;
+    }
+    bool accepted = false;
+    const QString name = QInputDialog::getText(
+        this, tr("重命名命名选择集"), tr("名称："), QLineEdit::Normal,
+        fromUtf8(selection->name), &accepted).trimmed();
+    if (!accepted) {
+        return;
+    }
+    const auto result = namedSelectionManager_->rename(
+        selection->id, toUtf8(name));
+    if (!result.success) {
+        QMessageBox::warning(this, tr("重命名失败"),
+                             namedSelectionErrorMessage(result.error));
+        return;
+    }
+    updateNamedSelectionDisplays();
+    showNamedSelectionProperties(selection->id);
+    messageLog_->appendPlainText(
+        tr("已重命名命名选择集：%1").arg(name));
+}
+
+void WorkbenchMainWindow::replaceSelectedNamedSelectionItems() {
+    const auto* selection =
+        namedSelectionManager_->find(selectedNamedSelectionId_);
+    if (selection == nullptr) {
+        return;
+    }
+    std::vector<emilcae::core::NamedSelectionItem> items;
+    emilcae::core::NamedSelectionEntityType entityType;
+    QString error;
+    if (!currentNamedSelectionItems(items, entityType, error)) {
+        QMessageBox::information(this, tr("替换命名选择集"), error);
+        return;
+    }
+    if (entityType != selection->entityType) {
+        QMessageBox::warning(this, tr("类型不一致"),
+                             tr("当前选择类型必须与命名选择集类型一致。"));
+        return;
+    }
+    const auto result = namedSelectionManager_->replaceItems(
+        selection->id, items);
+    if (!result.success) {
+        QMessageBox::warning(this, tr("替换失败"),
+                             namedSelectionErrorMessage(result.error));
+        return;
+    }
+    locateSelectedNamedSelection(false);
+    updateNamedSelectionDisplays();
+    messageLog_->appendPlainText(
+        tr("已用当前选择替换命名选择集“%1”的成员。")
+            .arg(fromUtf8(selection->name)));
+}
+
+void WorkbenchMainWindow::addSelectedNamedSelectionItems() {
+    const auto* selection =
+        namedSelectionManager_->find(selectedNamedSelectionId_);
+    if (selection == nullptr) {
+        return;
+    }
+    std::vector<emilcae::core::NamedSelectionItem> items;
+    emilcae::core::NamedSelectionEntityType entityType;
+    QString error;
+    if (!currentNamedSelectionItems(items, entityType, error)) {
+        QMessageBox::information(this, tr("添加当前选择"), error);
+        return;
+    }
+    if (entityType != selection->entityType) {
+        QMessageBox::warning(this, tr("类型不一致"),
+                             tr("当前选择类型必须与命名选择集类型一致。"));
+        return;
+    }
+    const auto result = namedSelectionManager_->addItems(selection->id, items);
+    if (!result.success) {
+        QMessageBox::warning(this, tr("添加失败"),
+                             namedSelectionErrorMessage(result.error));
+        return;
+    }
+    locateSelectedNamedSelection(false);
+    updateNamedSelectionDisplays();
+    messageLog_->appendPlainText(
+        tr("已向命名选择集“%1”添加 %2 个成员。")
+            .arg(fromUtf8(selection->name))
+            .arg(result.changedItemCount));
+}
+
+void WorkbenchMainWindow::removeSelectedNamedSelectionItems() {
+    const auto* selection =
+        namedSelectionManager_->find(selectedNamedSelectionId_);
+    if (selection == nullptr) {
+        return;
+    }
+    std::vector<emilcae::core::NamedSelectionItem> items;
+    emilcae::core::NamedSelectionEntityType entityType;
+    QString error;
+    if (!currentNamedSelectionItems(items, entityType, error)) {
+        QMessageBox::information(this, tr("移除当前选择"), error);
+        return;
+    }
+    if (entityType != selection->entityType) {
+        QMessageBox::warning(this, tr("类型不一致"),
+                             tr("当前选择类型必须与命名选择集类型一致。"));
+        return;
+    }
+    const auto result = namedSelectionManager_->removeItems(
+        selection->id, items);
+    if (result.error ==
+        emilcae::core::NamedSelectionError::WouldBecomeEmpty) {
+        QMessageBox::information(
+            this, tr("不能形成空选择集"),
+            tr("移除后命名选择集将为空。请删除整个命名选择集。"));
+        return;
+    }
+    if (!result.success) {
+        QMessageBox::warning(this, tr("移除失败"),
+                             namedSelectionErrorMessage(result.error));
+        return;
+    }
+    locateSelectedNamedSelection(false);
+    updateNamedSelectionDisplays();
+    messageLog_->appendPlainText(
+        tr("已从命名选择集“%1”移除 %2 个成员。")
+            .arg(fromUtf8(selection->name))
+            .arg(result.changedItemCount));
+}
+
+void WorkbenchMainWindow::deleteSelectedNamedSelection() {
+    const auto* selection =
+        namedSelectionManager_->find(selectedNamedSelectionId_);
+    if (selection == nullptr) {
+        return;
+    }
+    const int id = selection->id;
+    const QString name = fromUtf8(selection->name);
+    if (QMessageBox::question(
+            this, tr("删除命名选择集"),
+            tr("确定要删除命名选择集“%1”吗？\n"
+               "此操作不会删除任何几何对象。")
+                .arg(name),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No) != QMessageBox::Yes) {
+        return;
+    }
+    if (!namedSelectionManager_->remove(id).success) {
+        return;
+    }
+    QStandardItem* item = namedSelectionItem(id);
+    namedSelectionItems_.remove(id);
+    if (item != nullptr) {
+        namedSelectionRootItem_->removeRow(item->row());
+    }
+    selectedNamedSelectionId_ = -1;
+    occViewWidget_->clearNamedSelectionHighlight();
+    showDefaultProperties();
+    messageLog_->appendPlainText(tr("已删除命名选择集：%1").arg(name));
+}
+
+void WorkbenchMainWindow::addNamedSelectionTreeItem(
+    int id, const QString& name) {
+    auto* item = new QStandardItem(name);
+    item->setData(id, NamedSelectionIdRole);
+    item->setEditable(false);
+    namedSelectionRootItem_->appendRow(item);
+    namedSelectionItems_.insert(id, item);
+    projectTree_->expand(namedSelectionRootItem_->index());
+    projectTree_->setCurrentIndex(item->index());
+}
+
+bool WorkbenchMainWindow::currentNamedSelectionItems(
+    std::vector<emilcae::core::NamedSelectionItem>& items,
+    emilcae::core::NamedSelectionEntityType& entityType,
+    QString& errorMessage) const {
+    const std::vector<GeometrySelection> current =
+        occViewWidget_->currentSelections();
+    if (current.empty()) {
+        errorMessage = tr("请先在三维视窗中选择点、边、面、实体或对象。");
+        return false;
+    }
+    entityType = namedSelectionEntityType(current.front().mode);
+    items.clear();
+    items.reserve(current.size());
+    for (const GeometrySelection& selection : current) {
+        const auto currentType = namedSelectionEntityType(selection.mode);
+        if (currentType != entityType) {
+            errorMessage = tr("一个命名选择集只能包含同一种选择类型。");
+            return false;
+        }
+        const int localIndex = selection.mode == SelectionMode::Object
+            ? 0
+            : selection.localIndex;
+        if (selection.objectId < 0 || localIndex < 0 ||
+            (selection.mode != SelectionMode::Object && localIndex == 0)) {
+            errorMessage = tr("当前选择中存在无法确定局部序号的项目。");
+            return false;
+        }
+        items.push_back(
+            {selection.objectId, currentType, localIndex});
+    }
+    return true;
+}
+
+QString WorkbenchMainWindow::uniqueNamedSelectionName(
+    emilcae::core::NamedSelectionEntityType entityType) const {
+    const QString prefix = tr("%1选择集").arg(
+        namedSelectionEntityName(entityType));
+    const std::vector<emilcae::core::NamedSelection> selections =
+        namedSelectionManager_->namedSelections();
+    for (int suffix = 1;; ++suffix) {
+        const QString candidate = tr("%1 %2").arg(prefix).arg(suffix);
+        const bool exists = std::any_of(
+            selections.cbegin(), selections.cend(),
+            [&candidate](const emilcae::core::NamedSelection& selection) {
+                return fromUtf8(selection.name) == candidate;
+            });
+        if (!exists) {
+            return candidate;
+        }
+    }
+}
+
+QString WorkbenchMainWindow::namedSelectionErrorMessage(
+    emilcae::core::NamedSelectionError error) const {
+    using emilcae::core::NamedSelectionError;
+    switch (error) {
+    case NamedSelectionError::None:
+        return tr("无错误。");
+    case NamedSelectionError::NotFound:
+        return tr("命名选择集不存在。");
+    case NamedSelectionError::EmptyName:
+        return tr("命名选择集名称不能为空。");
+    case NamedSelectionError::DuplicateName:
+        return tr("同名命名选择集已经存在。");
+    case NamedSelectionError::EmptyItems:
+        return tr("命名选择集成员不能为空。");
+    case NamedSelectionError::MixedEntityTypes:
+        return tr("所有成员必须具有相同选择类型。");
+    case NamedSelectionError::InvalidGeometryObject:
+        return tr("选择中包含不存在的几何对象。");
+    case NamedSelectionError::InvalidLocalIndex:
+        return tr("选择中包含无效的局部序号。");
+    case NamedSelectionError::WouldBecomeEmpty:
+        return tr("该操作会使命名选择集变为空集合。");
+    }
+    return tr("未知命名选择集错误。");
+}
+
 void WorkbenchMainWindow::addOrUpdateMeshTreeItem(
     int meshId, int geometryObjectId) {
     QStandardItem* item = meshItem(meshId);
@@ -1967,8 +2465,13 @@ void WorkbenchMainWindow::switchSelectionMode(
 }
 
 void WorkbenchMainWindow::handleViewSelectionChanged() {
+    if (syncingTreeSelection_) {
+        return;
+    }
     selectedMaterialId_ = -1;
     selectedSectionId_ = -1;
+    selectedNamedSelectionId_ = -1;
+    occViewWidget_->clearNamedSelectionHighlight();
     updateMaterialActionStates();
     const std::vector<GeometrySelection> selections =
         occViewWidget_->currentSelections();
@@ -2132,6 +2635,59 @@ void WorkbenchMainWindow::showMaterialProperties(int materialId) {
     });
 }
 
+void WorkbenchMainWindow::showNamedSelectionProperties(int id) {
+    const auto* selection = namedSelectionManager_->find(id);
+    if (selection == nullptr) {
+        showDefaultProperties();
+        return;
+    }
+    const NamedSelectionResolveResult resolved =
+        namedSelectionResolver_->resolve(*selection);
+    const std::size_t validCount = resolved.validItems.size();
+    const std::size_t invalidCount = resolved.invalidItems.size();
+    QString status = tr("有效");
+    if (invalidCount > 0 && validCount > 0) {
+        status = tr("部分失效");
+    } else if (invalidCount > 0) {
+        status = tr("失效");
+    }
+    QVector<QPair<QString, QString>> rows = {
+        {tr("名称"), fromUtf8(selection->name)},
+        {tr("类型"), tr("%1命名选择集").arg(
+                           namedSelectionEntityName(selection->entityType))},
+        {tr("选择集 ID"), QString::number(selection->id)},
+        {tr("成员数量"), QString::number(selection->items.size())},
+        {tr("状态"), status}
+    };
+    if (invalidCount > 0) {
+        rows.append({tr("有效成员"), QString::number(validCount)});
+        rows.append({tr("失效成员"), QString::number(invalidCount)});
+    }
+    setPropertyRows(rows);
+}
+
+void WorkbenchMainWindow::updateNamedSelectionDisplays() {
+    for (const emilcae::core::NamedSelection& selection :
+         namedSelectionManager_->namedSelections()) {
+        QStandardItem* item = namedSelectionItem(selection.id);
+        if (item == nullptr) {
+            continue;
+        }
+        const NamedSelectionResolveResult resolved =
+            namedSelectionResolver_->resolve(selection);
+        QString text = fromUtf8(selection.name);
+        if (!resolved.invalidItems.empty()) {
+            text += resolved.validItems.empty()
+                ? tr("  [失效]")
+                : tr("  [部分失效]");
+        }
+        item->setText(text);
+    }
+    if (selectedNamedSelectionId_ >= 0) {
+        showNamedSelectionProperties(selectedNamedSelectionId_);
+    }
+}
+
 void WorkbenchMainWindow::showSectionProperties(int id) {
     const emilcae::core::SolidSection* section =
         sectionManager_.findSection(id);
@@ -2252,6 +2808,16 @@ int WorkbenchMainWindow::sectionId(const QStandardItem* item) const {
     return valid ? id : -1;
 }
 
+int WorkbenchMainWindow::namedSelectionId(
+    const QStandardItem* item) const {
+    if (item == nullptr) {
+        return -1;
+    }
+    bool valid = false;
+    const int id = item->data(NamedSelectionIdRole).toInt(&valid);
+    return valid ? id : -1;
+}
+
 QStandardItem* WorkbenchMainWindow::geometryItem(int objectId) const {
     return geometryItems_.value(objectId, nullptr);
 }
@@ -2268,9 +2834,15 @@ QStandardItem* WorkbenchMainWindow::sectionItem(int id) const {
     return sectionItems_.value(id, nullptr);
 }
 
+QStandardItem* WorkbenchMainWindow::namedSelectionItem(int id) const {
+    return namedSelectionItems_.value(id, nullptr);
+}
+
 void WorkbenchMainWindow::updateWorkspaceProperty(const QString& workspaceName) {
     Q_UNUSED(workspaceName)
-    if (selectedSectionId_ >= 0) {
+    if (selectedNamedSelectionId_ >= 0) {
+        showNamedSelectionProperties(selectedNamedSelectionId_);
+    } else if (selectedSectionId_ >= 0) {
         showSectionProperties(selectedSectionId_);
     } else if (selectedMaterialId_ >= 0) {
         showMaterialProperties(selectedMaterialId_);

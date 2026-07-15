@@ -73,3 +73,14 @@ if(MSVC)
 endif()
 
 add_test(NAME SolidSectionManager COMMAND QTCAE_SolidSectionTests)
+
+add_executable(QTCAE_NamedSelectionTests
+    NamedSelectionManagerTests.cpp
+)
+target_link_libraries(QTCAE_NamedSelectionTests PRIVATE EmilCAE_Core)
+target_compile_features(QTCAE_NamedSelectionTests PRIVATE cxx_std_20)
+if(MSVC)
+    target_compile_options(QTCAE_NamedSelectionTests PRIVATE /utf-8 /FS)
+endif()
+
+add_test(NAME NamedSelectionManager COMMAND QTCAE_NamedSelectionTests)

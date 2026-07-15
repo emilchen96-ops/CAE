@@ -6,8 +6,13 @@
 #include <QString>
 #include <QVector>
 
+#include <memory>
+#include <vector>
+
 #include "GeometrySelection.hpp"
+#include "NamedSelectionResolver.hpp"
 #include "emilcae/core/MaterialManager.hpp"
+#include "emilcae/core/NamedSelectionManager.hpp"
 #include "emilcae/core/SolidSectionAssignmentManager.hpp"
 #include "emilcae/core/SolidSectionManager.hpp"
 
@@ -91,6 +96,27 @@ private:
         QVector<QPair<QString, QString>>& rows,
         emilcae::core::SectionAssignmentTargetType targetType,
         int targetId, int sourceGeometryId = -1) const;
+    void createNamedSelection();
+    void locateSelectedNamedSelection(bool notifyHiddenObjects = true);
+    void renameSelectedNamedSelection();
+    void replaceSelectedNamedSelectionItems();
+    void addSelectedNamedSelectionItems();
+    void removeSelectedNamedSelectionItems();
+    void deleteSelectedNamedSelection();
+    void addNamedSelectionTreeItem(int namedSelectionId,
+                                   const QString& name);
+    void showNamedSelectionProperties(int namedSelectionId);
+    void updateNamedSelectionDisplays();
+    bool currentNamedSelectionItems(
+        std::vector<emilcae::core::NamedSelectionItem>& items,
+        emilcae::core::NamedSelectionEntityType& entityType,
+        QString& errorMessage) const;
+    QString uniqueNamedSelectionName(
+        emilcae::core::NamedSelectionEntityType entityType) const;
+    QString namedSelectionErrorMessage(
+        emilcae::core::NamedSelectionError error) const;
+    int namedSelectionId(const QStandardItem* item) const;
+    QStandardItem* namedSelectionItem(int namedSelectionId) const;
     void switchSelectionMode(SelectionMode mode,
                              const QString& displayName);
     void handleViewSelectionChanged();
@@ -144,6 +170,8 @@ private:
     QAction* deleteSectionAction_{nullptr};
     QAction* assignSectionAction_{nullptr};
     QAction* unassignSectionAction_{nullptr};
+    QAction* createNamedSelectionAction_{nullptr};
+    QAction* clearCurrentSelectionAction_{nullptr};
     QAction* objectSelectionAction_{nullptr};
     QAction* vertexSelectionAction_{nullptr};
     QAction* edgeSelectionAction_{nullptr};
@@ -169,6 +197,7 @@ private:
     QStandardItem* meshRootItem_{nullptr};
     QStandardItem* materialRootItem_{nullptr};
     QStandardItem* sectionRootItem_{nullptr};
+    QStandardItem* namedSelectionRootItem_{nullptr};
     QTreeView* projectTree_{nullptr};
     QPlainTextEdit* messageLog_{nullptr};
     OccViewWidget* occViewWidget_{nullptr};
@@ -180,9 +209,14 @@ private:
     emilcae::core::SolidSectionAssignmentManager assignmentManager_{
         sectionManager_};
     QHash<int, QStandardItem*> sectionItems_;
+    std::unique_ptr<emilcae::core::NamedSelectionManager>
+        namedSelectionManager_;
+    std::unique_ptr<NamedSelectionResolver> namedSelectionResolver_;
+    QHash<int, QStandardItem*> namedSelectionItems_;
     int selectedGeometryObjectId_{-1};
     int selectedMeshObjectId_{-1};
     int selectedMaterialId_{-1};
     int selectedSectionId_{-1};
+    int selectedNamedSelectionId_{-1};
     bool syncingTreeSelection_{false};
 };

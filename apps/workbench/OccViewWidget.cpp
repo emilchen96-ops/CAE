@@ -215,6 +215,7 @@ struct OccViewWidget::Impl {
     Handle(V3d_View) view;
     Handle(AIS_InteractiveContext) context;
     std::unique_ptr<GeometryObjectManager> objectManager;
+    std::vector<Handle(AIS_Shape)> namedSelectionHighlights;
     bool initialized{false};
     bool initializationFailed{false};
 };
@@ -364,6 +365,7 @@ void OccViewWidget::setSelectionMode(SelectionMode mode) {
 
 void OccViewWidget::clearSelection() {
     forcedObjectSelectionId_ = -1;
+    clearNamedSelectionHighlight();
     if (!impl_->context.IsNull()) {
         impl_->context->ClearDetected(Standard_False);
         impl_->context->ClearSelected(Standard_False);
@@ -372,6 +374,62 @@ void OccViewWidget::clearSelection() {
         }
     }
     notifySelectionChanged();
+}
+
+bool OccViewWidget::highlightNamedSelection(
+    const std::vector<TopoDS_Shape>& shapes) {
+    initializeViewer();
+    if (impl_->context.IsNull() || impl_->view.IsNull()) {
+        return false;
+    }
+    clearNamedSelectionHighlight();
+    try {
+        for (const TopoDS_Shape& shape : shapes) {
+            if (shape.IsNull()) {
+                continue;
+            }
+            Handle(AIS_Shape) highlight = new AIS_Shape(shape);
+            impl_->context->SetColor(highlight, Quantity_NOC_ORANGE,
+                                     Standard_False);
+            impl_->context->SetWidth(highlight, 4.0, Standard_False);
+            if (shape.ShapeType() == TopAbs_FACE ||
+                shape.ShapeType() == TopAbs_SOLID ||
+                shape.ShapeType() == TopAbs_COMPSOLID) {
+                impl_->context->SetDisplayMode(highlight, AIS_Shaded,
+                                               Standard_False);
+                impl_->context->SetTransparency(highlight, 0.35,
+                                                Standard_False);
+            } else {
+                impl_->context->SetDisplayMode(highlight, AIS_WireFrame,
+                                               Standard_False);
+            }
+            impl_->context->Display(highlight, Standard_False);
+            impl_->context->Deactivate(highlight);
+            impl_->namedSelectionHighlights.push_back(highlight);
+        }
+        impl_->view->Redraw();
+        return !impl_->namedSelectionHighlights.empty();
+    } catch (const Standard_Failure& failure) {
+        qWarning() << "OpenCASCADE named selection highlight failed:"
+                   << failure.GetMessageString();
+        clearNamedSelectionHighlight();
+        return false;
+    }
+}
+
+void OccViewWidget::clearNamedSelectionHighlight() {
+    if (!impl_->context.IsNull()) {
+        for (const Handle(AIS_Shape)& highlight :
+             impl_->namedSelectionHighlights) {
+            if (!highlight.IsNull()) {
+                impl_->context->Remove(highlight, Standard_False);
+            }
+        }
+    }
+    impl_->namedSelectionHighlights.clear();
+    if (!impl_->view.IsNull()) {
+        impl_->view->Redraw();
+    }
 }
 
 std::vector<GeometrySelection> OccViewWidget::currentSelections() const {

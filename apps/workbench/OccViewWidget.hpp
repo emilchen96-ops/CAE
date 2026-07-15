@@ -50,6 +50,9 @@ public:
     void clearSelection();
     std::vector<GeometrySelection> currentSelections() const;
     bool selectGeometryObject(int objectId);
+    bool highlightNamedSelection(
+        const std::vector<TopoDS_Shape>& shapes);
+    void clearNamedSelectionHighlight();
     void clearScene();
     void setFrontView();
     void setBackView();

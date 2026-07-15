@@ -1,8 +1,8 @@
-# EmilCAE contribution rules
+# QTCAE 开发规则
 
-- Preserve the documented module boundaries and do not introduce circular dependencies.
-- Keep `EmilCAE_Core` independent of third-party libraries.
-- Never add GUI, Qt, OpenCASCADE, Gmsh, or VTK dependencies to the Solver.
-- Compile the project and run its tests after every change.
-- Do not commit build directories, executables, DLLs, PDBs, or large simulation files.
-- Never fabricate test results or simulation results.
+- 保持已定义的模块边界，不得引入循环依赖。
+- 保持 `EmilCAE_Core` 独立于第三方库。
+- 不得向 Solver 引入 GUI、Qt、OpenCASCADE、Gmsh 或 VTK 依赖。
+- 每次修改后都要编译工程并运行测试。
+- 不得提交构建目录、可执行文件、DLL、PDB 或大型仿真文件。
+- 不得伪造测试结果或仿真结果。

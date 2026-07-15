@@ -39,6 +39,8 @@ add_executable(QTCAE_Workbench WIN32
     HmAsciiMeshIo.hpp
     MaterialEditorDialog.cpp
     MaterialEditorDialog.hpp
+    NamedSelectionResolver.cpp
+    NamedSelectionResolver.hpp
     SectionAssignmentDialog.cpp
     SectionAssignmentDialog.hpp
     SolidSectionEditorDialog.cpp

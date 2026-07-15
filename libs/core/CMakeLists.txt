@@ -1,6 +1,7 @@
 add_library(EmilCAE_Core STATIC
     src/Material.cpp
     src/MaterialManager.cpp
+    src/NamedSelectionManager.cpp
     src/SolidSectionAssignmentManager.cpp
     src/SolidSectionManager.cpp
     src/Version.cpp
