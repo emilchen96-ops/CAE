@@ -1,11 +1,17 @@
-add_test(NAME WorkbenchVersion COMMAND EmilCAE_Workbench --version)
+add_test(
+    NAME WorkbenchVersion
+    COMMAND $<TARGET_FILE:QTCAE_Workbench> --version
+)
 set_tests_properties(WorkbenchVersion PROPERTIES
-    PASS_REGULAR_EXPRESSION "EmilCAE Workbench 0.1.0"
+    PASS_REGULAR_EXPRESSION "QTCAE Workbench 0.1.0"
 )
 
-add_test(NAME WorkbenchHelp COMMAND EmilCAE_Workbench --help)
-set_tests_properties(WorkbenchHelp PROPERTIES
-    PASS_REGULAR_EXPRESSION "Usage: EmilCAE.Workbench"
+add_test(
+    NAME WorkbenchSmokeTest
+    COMMAND $<TARGET_FILE:QTCAE_Workbench> --smoke-test
+)
+set_tests_properties(WorkbenchSmokeTest PROPERTIES
+    TIMEOUT 10
 )
 
 add_test(NAME SolverVersion COMMAND EmilCAE_Solver --version)
@@ -20,3 +26,50 @@ set_tests_properties(SolverHelp PROPERTIES
 
 add_test(NAME SolverRejectsUnknownArgument COMMAND EmilCAE_Solver --unknown)
 set_tests_properties(SolverRejectsUnknownArgument PROPERTIES WILL_FAIL TRUE)
+
+find_package(Qt6 REQUIRED COMPONENTS Core)
+add_executable(QTCAE_HmAsciiTests
+    HmAsciiMeshIoTests.cpp
+    ../apps/workbench/HmAsciiMeshIo.cpp
+    ../apps/workbench/HmAsciiMeshIo.hpp
+    ../apps/workbench/MeshData.hpp
+)
+target_include_directories(QTCAE_HmAsciiTests PRIVATE
+    ../apps/workbench
+)
+target_link_libraries(QTCAE_HmAsciiTests PRIVATE Qt6::Core)
+target_compile_features(QTCAE_HmAsciiTests PRIVATE cxx_std_20)
+if(MSVC)
+    target_compile_options(QTCAE_HmAsciiTests PRIVATE /utf-8 /FS)
+endif()
+if(WIN32)
+    add_custom_command(TARGET QTCAE_HmAsciiTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:Qt6::Core>
+            $<TARGET_FILE_DIR:QTCAE_HmAsciiTests>
+    )
+endif()
+
+add_test(NAME HmAsciiMeshIo COMMAND QTCAE_HmAsciiTests)
+
+add_executable(QTCAE_MaterialTests
+    MaterialManagerTests.cpp
+)
+target_link_libraries(QTCAE_MaterialTests PRIVATE EmilCAE_Core)
+target_compile_features(QTCAE_MaterialTests PRIVATE cxx_std_20)
+if(MSVC)
+    target_compile_options(QTCAE_MaterialTests PRIVATE /utf-8 /FS)
+endif()
+
+add_test(NAME MaterialManager COMMAND QTCAE_MaterialTests)
+
+add_executable(QTCAE_SolidSectionTests
+    SolidSectionManagerTests.cpp
+)
+target_link_libraries(QTCAE_SolidSectionTests PRIVATE EmilCAE_Core)
+target_compile_features(QTCAE_SolidSectionTests PRIVATE cxx_std_20)
+if(MSVC)
+    target_compile_options(QTCAE_SolidSectionTests PRIVATE /utf-8 /FS)
+endif()
+
+add_test(NAME SolidSectionManager COMMAND QTCAE_SolidSectionTests)
