@@ -1,4 +1,6 @@
 add_library(EmilCAE_Core STATIC
+    src/DisplacementConstraint.cpp
+    src/DisplacementConstraintManager.cpp
     src/Material.cpp
     src/MaterialManager.cpp
     src/NamedSelectionManager.cpp

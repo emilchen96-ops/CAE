@@ -84,3 +84,49 @@ if(MSVC)
 endif()
 
 add_test(NAME NamedSelectionManager COMMAND QTCAE_NamedSelectionTests)
+
+add_executable(QTCAE_DisplacementConstraintTests
+    DisplacementConstraintManagerTests.cpp
+)
+target_link_libraries(QTCAE_DisplacementConstraintTests PRIVATE EmilCAE_Core)
+target_compile_features(QTCAE_DisplacementConstraintTests PRIVATE cxx_std_20)
+if(MSVC)
+    target_compile_options(QTCAE_DisplacementConstraintTests PRIVATE /utf-8 /FS)
+endif()
+
+add_test(NAME DisplacementConstraintManager
+         COMMAND QTCAE_DisplacementConstraintTests)
+
+find_package(VTK 9.4 REQUIRED COMPONENTS
+    CommonCore
+    CommonDataModel
+)
+
+add_executable(QTCAE_MeshDataToVtkTests
+    MeshDataToVtkConverterTests.cpp
+    ../apps/workbench/MeshDataToVtkConverter.cpp
+    ../apps/workbench/MeshDataToVtkConverter.hpp
+    ../apps/workbench/MeshData.hpp
+)
+target_include_directories(QTCAE_MeshDataToVtkTests PRIVATE
+    ../apps/workbench
+)
+target_link_libraries(QTCAE_MeshDataToVtkTests PRIVATE
+    VTK::CommonCore
+    VTK::CommonDataModel
+)
+target_compile_features(QTCAE_MeshDataToVtkTests PRIVATE cxx_std_20)
+if(MSVC)
+    target_compile_options(QTCAE_MeshDataToVtkTests PRIVATE /utf-8 /FS)
+endif()
+if(WIN32)
+    add_custom_command(TARGET QTCAE_MeshDataToVtkTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_RUNTIME_DLLS:QTCAE_MeshDataToVtkTests>
+            $<TARGET_FILE_DIR:QTCAE_MeshDataToVtkTests>
+        COMMAND_EXPAND_LISTS
+    )
+endif()
+
+add_test(NAME MeshDataToVtkConverter
+         COMMAND QTCAE_MeshDataToVtkTests)

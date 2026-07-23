@@ -1,7 +1,10 @@
 #include "WorkbenchMainWindow.hpp"
 
+#include <QVTKOpenGLNativeWidget.h>
+
 #include <QApplication>
 #include <QCoreApplication>
+#include <QSurfaceFormat>
 #include <QTimer>
 
 #include <cstdio>
@@ -18,6 +21,8 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
+    QSurfaceFormat::setDefaultFormat(
+        QVTKOpenGLNativeWidget::defaultFormat());
     QApplication application(argc, argv);
 
     QCoreApplication::setOrganizationName("QTCAE");

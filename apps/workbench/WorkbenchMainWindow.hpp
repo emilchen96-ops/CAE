@@ -11,6 +11,7 @@
 
 #include "GeometrySelection.hpp"
 #include "NamedSelectionResolver.hpp"
+#include "emilcae/core/DisplacementConstraintManager.hpp"
 #include "emilcae/core/MaterialManager.hpp"
 #include "emilcae/core/NamedSelectionManager.hpp"
 #include "emilcae/core/SolidSectionAssignmentManager.hpp"
@@ -28,6 +29,8 @@ class QPoint;
 class QStandardItem;
 class QTreeView;
 class OccViewWidget;
+class VtkPostViewWidget;
+enum class VtkMeshDisplayMode;
 
 class WorkbenchMainWindow final : public QMainWindow {
     Q_OBJECT
@@ -58,6 +61,12 @@ private:
     void clearSelectedMesh();
     void importHmAsciiMesh();
     void exportHmAsciiMesh();
+    void displayMeshInPostprocessing(int meshId = -1);
+    void clearPostprocessingMeshIfMatches(int meshId);
+    void showPostprocessingMeshProperties(int meshId);
+    void setPostDisplayMode(VtkMeshDisplayMode mode);
+    QString postDisplayModeName() const;
+    void updatePostViewActionStates();
     void addOrUpdateMeshTreeItem(int meshId, int geometryObjectId);
     void addStandaloneMeshTreeItem(int meshId, const QString& name);
     void setMeshVisible(QStandardItem* item, bool visible);
@@ -117,6 +126,32 @@ private:
         emilcae::core::NamedSelectionError error) const;
     int namedSelectionId(const QStandardItem* item) const;
     QStandardItem* namedSelectionItem(int namedSelectionId) const;
+    void createFixedConstraint(int namedSelectionId = -1);
+    void createDisplacementConstraint(int namedSelectionId = -1);
+    void createConstraint(emilcae::core::ConstraintType type,
+                          int namedSelectionId);
+    void editSelectedConstraint();
+    void renameSelectedConstraint();
+    void duplicateSelectedConstraint();
+    void locateSelectedConstraint(bool notify = true);
+    void deleteSelectedConstraint();
+    void addConstraintTreeItem(int constraintId, const QString& name);
+    void showConstraintProperties(int constraintId);
+    void updateConstraintDisplays();
+    emilcae::core::NamedSelectionValiditySummary
+    namedSelectionValiditySummary(int namedSelectionId) const;
+    emilcae::core::ConstraintValidity constraintValidity(
+        int constraintId) const;
+    bool confirmUsableConstraintRegion(int namedSelectionId,
+                                       bool allowPartial);
+    bool isConstraintNameAvailable(const QString& name,
+                                   int excludedConstraintId) const;
+    QString uniqueConstraintName(emilcae::core::ConstraintType type) const;
+    QString uniqueConstraintCopyName(const QString& sourceName) const;
+    QString constraintErrorMessage(
+        emilcae::core::ConstraintError error) const;
+    int constraintId(const QStandardItem* item) const;
+    QStandardItem* constraintItem(int constraintId) const;
     void switchSelectionMode(SelectionMode mode,
                              const QString& displayName);
     void handleViewSelectionChanged();
@@ -128,6 +163,7 @@ private:
         const QVector<QPair<QString, QString>>& rows);
     int geometryObjectId(const QStandardItem* item) const;
     int meshObjectId(const QStandardItem* item) const;
+    int postMeshObjectId(const QStandardItem* item) const;
     int materialId(const QStandardItem* item) const;
     QStandardItem* geometryItem(int objectId) const;
     QStandardItem* meshItem(int meshId) const;
@@ -156,6 +192,9 @@ private:
     QAction* clearMeshAction_{nullptr};
     QAction* importHmAsciiAction_{nullptr};
     QAction* exportHmAsciiAction_{nullptr};
+    QAction* surfaceWithEdgesAction_{nullptr};
+    QAction* surfaceOnlyAction_{nullptr};
+    QAction* wireframeAction_{nullptr};
     QAction* newMaterialAction_{nullptr};
     QAction* steelMaterialAction_{nullptr};
     QAction* aluminumMaterialAction_{nullptr};
@@ -172,6 +211,8 @@ private:
     QAction* unassignSectionAction_{nullptr};
     QAction* createNamedSelectionAction_{nullptr};
     QAction* clearCurrentSelectionAction_{nullptr};
+    QAction* newFixedConstraintAction_{nullptr};
+    QAction* newDisplacementConstraintAction_{nullptr};
     QAction* objectSelectionAction_{nullptr};
     QAction* vertexSelectionAction_{nullptr};
     QAction* edgeSelectionAction_{nullptr};
@@ -185,6 +226,7 @@ private:
     QAction* aboutQtAction_{nullptr};
     QActionGroup* workspaceActionGroup_{nullptr};
     QActionGroup* selectionActionGroup_{nullptr};
+    QActionGroup* postDisplayActionGroup_{nullptr};
 
     QDockWidget* projectDock_{nullptr};
     QDockWidget* propertiesDock_{nullptr};
@@ -198,9 +240,15 @@ private:
     QStandardItem* materialRootItem_{nullptr};
     QStandardItem* sectionRootItem_{nullptr};
     QStandardItem* namedSelectionRootItem_{nullptr};
+    QStandardItem* analysisRootItem_{nullptr};
+    QStandardItem* boundaryConditionRootItem_{nullptr};
+    QStandardItem* resultRootItem_{nullptr};
+    QStandardItem* currentPostMeshRootItem_{nullptr};
+    QStandardItem* currentPostMeshItem_{nullptr};
     QTreeView* projectTree_{nullptr};
     QPlainTextEdit* messageLog_{nullptr};
     OccViewWidget* occViewWidget_{nullptr};
+    VtkPostViewWidget* vtkPostViewWidget_{nullptr};
     QHash<int, QStandardItem*> geometryItems_;
     QHash<int, QStandardItem*> meshItems_;
     QHash<int, QStandardItem*> materialItems_;
@@ -213,10 +261,16 @@ private:
         namedSelectionManager_;
     std::unique_ptr<NamedSelectionResolver> namedSelectionResolver_;
     QHash<int, QStandardItem*> namedSelectionItems_;
+    std::unique_ptr<emilcae::core::DisplacementConstraintManager>
+        constraintManager_;
+    QHash<int, QStandardItem*> constraintItems_;
+    QHash<int, int> constraintValidityStates_;
     int selectedGeometryObjectId_{-1};
     int selectedMeshObjectId_{-1};
     int selectedMaterialId_{-1};
     int selectedSectionId_{-1};
     int selectedNamedSelectionId_{-1};
+    int selectedConstraintId_{-1};
+    int currentPostMeshId_{-1};
     bool syncingTreeSelection_{false};
 };

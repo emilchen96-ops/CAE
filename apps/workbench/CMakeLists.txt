@@ -7,6 +7,17 @@ find_package(OpenCASCADE REQUIRED COMPONENTS
     ApplicationFramework
     DataExchange
 )
+set(QTCAE_VTK_MODULES
+    CommonCore
+    CommonDataModel
+    RenderingAnnotation
+    RenderingCore
+    RenderingOpenGL2
+    InteractionStyle
+    InteractionWidgets
+    GUISupportQt
+)
+find_package(VTK 9.4 REQUIRED COMPONENTS ${QTCAE_VTK_MODULES})
 
 set(Gmsh_DIR "" CACHE PATH "Path to the Gmsh C++ SDK root")
 find_path(GMSH_INCLUDE_DIR
@@ -30,6 +41,8 @@ if(NOT GMSH_INCLUDE_DIR OR NOT GMSH_LIBRARY OR NOT GMSH_RUNTIME_DLL)
 endif()
 
 add_executable(QTCAE_Workbench WIN32
+    DisplacementConstraintDialog.cpp
+    DisplacementConstraintDialog.hpp
     main.cpp
     GeometryImporter.cpp
     GeometryImporter.hpp
@@ -39,6 +52,8 @@ add_executable(QTCAE_Workbench WIN32
     HmAsciiMeshIo.hpp
     MaterialEditorDialog.cpp
     MaterialEditorDialog.hpp
+    MeshDataToVtkConverter.cpp
+    MeshDataToVtkConverter.hpp
     NamedSelectionResolver.cpp
     NamedSelectionResolver.hpp
     SectionAssignmentDialog.cpp
@@ -53,6 +68,8 @@ add_executable(QTCAE_Workbench WIN32
     OccViewWidget.hpp
     WorkbenchMainWindow.cpp
     WorkbenchMainWindow.hpp
+    VtkPostViewWidget.cpp
+    VtkPostViewWidget.hpp
 )
 
 set_target_properties(QTCAE_Workbench PROPERTIES
@@ -89,15 +106,27 @@ target_link_libraries(QTCAE_Workbench PRIVATE
     EmilCAE_Core
     ${QTCAE_OCC_LIBRARIES}
     ${GMSH_LIBRARY}
+    ${VTK_LIBRARIES}
 )
 target_compile_features(QTCAE_Workbench PRIVATE cxx_std_20)
 target_compile_definitions(QTCAE_Workbench PRIVATE GMSH_DLL)
+
+vtk_module_autoinit(
+    TARGETS QTCAE_Workbench
+    MODULES ${VTK_LIBRARIES}
+)
 
 if(MSVC)
     target_compile_options(QTCAE_Workbench PRIVATE /utf-8 /FS)
 endif()
 
 if(WIN32)
+    add_custom_command(TARGET QTCAE_Workbench POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_RUNTIME_DLLS:QTCAE_Workbench>
+            $<TARGET_FILE_DIR:QTCAE_Workbench>
+        COMMAND_EXPAND_LISTS
+    )
     add_custom_command(TARGET QTCAE_Workbench POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${GMSH_RUNTIME_DLL}"

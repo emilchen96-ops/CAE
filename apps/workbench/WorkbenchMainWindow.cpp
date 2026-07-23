@@ -4,10 +4,12 @@
 #include "GeometryImporter.hpp"
 #include "GmshMesher.hpp"
 #include "HmAsciiMeshIo.hpp"
+#include "DisplacementConstraintDialog.hpp"
 #include "MaterialEditorDialog.hpp"
 #include "NamedSelectionResolver.hpp"
 #include "SectionAssignmentDialog.hpp"
 #include "SolidSectionEditorDialog.hpp"
+#include "VtkPostViewWidget.hpp"
 
 #include <Bnd_Box.hxx>
 #include <BRepBndLib.hxx>
@@ -23,7 +25,6 @@
 #include <QHeaderView>
 #include <QFileDialog>
 #include <QFileInfo>
-#include <QLabel>
 #include <QInputDialog>
 #include <QMenu>
 #include <QMenuBar>
@@ -34,6 +35,7 @@
 #include <QStandardItem>
 #include <QStandardItemModel>
 #include <QStatusBar>
+#include <QStringList>
 #include <QTableView>
 #include <QToolBar>
 #include <QTreeView>
@@ -48,6 +50,8 @@ constexpr int MeshObjectIdRole = Qt::UserRole + 2;
 constexpr int MaterialIdRole = Qt::UserRole + 3;
 constexpr int SolidSectionIdRole = Qt::UserRole + 4;
 constexpr int NamedSelectionIdRole = Qt::UserRole + 5;
+constexpr int ConstraintIdRole = Qt::UserRole + 6;
+constexpr int PostMeshObjectIdRole = Qt::UserRole + 7;
 
 QString fromUtf8(const std::string& value) {
     return QString::fromUtf8(value.data(),
@@ -155,6 +159,25 @@ QString namedSelectionEntityName(
     return {};
 }
 
+QString constraintTypeName(emilcae::core::ConstraintType type) {
+    return type == emilcae::core::ConstraintType::Fixed
+        ? QCoreApplication::translate("WorkbenchMainWindow", "固定约束")
+        : QCoreApplication::translate("WorkbenchMainWindow", "位移约束");
+}
+
+QString constraintValidityName(emilcae::core::ConstraintValidity validity) {
+    using emilcae::core::ConstraintValidity;
+    switch (validity) {
+    case ConstraintValidity::Valid:
+        return QCoreApplication::translate("WorkbenchMainWindow", "有效");
+    case ConstraintValidity::PartiallyInvalid:
+        return QCoreApplication::translate("WorkbenchMainWindow", "部分失效");
+    case ConstraintValidity::Invalid:
+        return QCoreApplication::translate("WorkbenchMainWindow", "失效");
+    }
+    return {};
+}
+
 } // namespace
 
 WorkbenchMainWindow::WorkbenchMainWindow(QWidget* parent)
@@ -179,6 +202,9 @@ WorkbenchMainWindow::WorkbenchMainWindow(QWidget* parent)
                       NamedSelectionGeometry{object->shape, object->visible})
                 : std::nullopt;
         });
+    constraintManager_ = std::make_unique<
+        emilcae::core::DisplacementConstraintManager>(
+            *namedSelectionManager_);
     createDockWidgets();
     createActions();
     createMenus();
@@ -209,6 +235,9 @@ void WorkbenchMainWindow::createActions() {
     clearMeshAction_ = new QAction(tr("清除网格"), this);
     importHmAsciiAction_ = new QAction(tr("导入 HMASCII 网格"), this);
     exportHmAsciiAction_ = new QAction(tr("导出 HMASCII 网格"), this);
+    surfaceWithEdgesAction_ = new QAction(tr("表面加边线"), this);
+    surfaceOnlyAction_ = new QAction(tr("仅表面"), this);
+    wireframeAction_ = new QAction(tr("线框"), this);
     newMaterialAction_ = new QAction(tr("新建材料"), this);
     steelMaterialAction_ = new QAction(tr("从结构钢模板创建"), this);
     aluminumMaterialAction_ = new QAction(tr("从铝合金模板创建"), this);
@@ -227,6 +256,9 @@ void WorkbenchMainWindow::createActions() {
         new QAction(tr("创建命名选择集"), this);
     clearCurrentSelectionAction_ =
         new QAction(tr("清除当前选择"), this);
+    newFixedConstraintAction_ = new QAction(tr("新建固定约束"), this);
+    newDisplacementConstraintAction_ =
+        new QAction(tr("新建位移约束"), this);
     objectSelectionAction_ = new QAction(tr("对象"), this);
     vertexSelectionAction_ = new QAction(tr("点"), this);
     edgeSelectionAction_ = new QAction(tr("边"), this);
@@ -257,6 +289,15 @@ void WorkbenchMainWindow::createActions() {
     }
     objectSelectionAction_->setChecked(true);
 
+    postDisplayActionGroup_ = new QActionGroup(this);
+    postDisplayActionGroup_->setExclusive(true);
+    for (QAction* action : {surfaceWithEdgesAction_, surfaceOnlyAction_,
+                            wireframeAction_}) {
+        action->setCheckable(true);
+        postDisplayActionGroup_->addAction(action);
+    }
+    surfaceWithEdgesAction_->setChecked(true);
+
     connect(exitAction_, &QAction::triggered, this, &QWidget::close);
     connect(openProjectAction_, &QAction::triggered,
             this, &WorkbenchMainWindow::openGeometryFile);
@@ -270,6 +311,15 @@ void WorkbenchMainWindow::createActions() {
             this, &WorkbenchMainWindow::importHmAsciiMesh);
     connect(exportHmAsciiAction_, &QAction::triggered,
             this, &WorkbenchMainWindow::exportHmAsciiMesh);
+    connect(surfaceWithEdgesAction_, &QAction::triggered, this, [this] {
+        setPostDisplayMode(VtkMeshDisplayMode::SurfaceWithEdges);
+    });
+    connect(surfaceOnlyAction_, &QAction::triggered, this, [this] {
+        setPostDisplayMode(VtkMeshDisplayMode::SurfaceOnly);
+    });
+    connect(wireframeAction_, &QAction::triggered, this, [this] {
+        setPostDisplayMode(VtkMeshDisplayMode::Wireframe);
+    });
     connect(newMaterialAction_, &QAction::triggered,
             this, &WorkbenchMainWindow::createBlankMaterial);
     connect(steelMaterialAction_, &QAction::triggered,
@@ -302,6 +352,10 @@ void WorkbenchMainWindow::createActions() {
             this, &WorkbenchMainWindow::createNamedSelection);
     connect(clearCurrentSelectionAction_, &QAction::triggered,
             occViewWidget_, &OccViewWidget::clearSelection);
+    connect(newFixedConstraintAction_, &QAction::triggered,
+            this, [this] { createFixedConstraint(); });
+    connect(newDisplacementConstraintAction_, &QAction::triggered,
+            this, [this] { createDisplacementConstraint(); });
     connect(objectSelectionAction_, &QAction::triggered, this, [this] {
         switchSelectionMode(SelectionMode::Object, tr("对象"));
     });
@@ -324,7 +378,11 @@ void WorkbenchMainWindow::createActions() {
     connect(postprocessingAction_, &QAction::triggered,
             this, &WorkbenchMainWindow::switchToPostprocessing);
     connect(fitAllAction_, &QAction::triggered, this, [this] {
-        occViewWidget_->fitAll();
+        if (workspaceStack_->currentIndex() == 1) {
+            vtkPostViewWidget_->fitAll();
+        } else {
+            occViewWidget_->fitAll();
+        }
         statusBar()->showMessage(tr("已执行适合窗口"), 3000);
     });
     connect(axonometricViewAction_, &QAction::triggered, this, [this] {
@@ -364,6 +422,7 @@ void WorkbenchMainWindow::createActions() {
     connect(aboutQtAction_, &QAction::triggered, qApp, &QApplication::aboutQt);
     updateMaterialActionStates();
     updateSectionActionStates();
+    updatePostViewActionStates();
 }
 
 void WorkbenchMainWindow::createMenus() {
@@ -390,6 +449,10 @@ void WorkbenchMainWindow::createMenus() {
     standardViewMenu->addAction(bottomViewAction_);
     standardViewMenu->addSeparator();
     standardViewMenu->addAction(fitAllAction_);
+    auto* postDisplayMenu = viewMenu->addMenu(tr("后处理显示"));
+    postDisplayMenu->addAction(surfaceWithEdgesAction_);
+    postDisplayMenu->addAction(surfaceOnlyAction_);
+    postDisplayMenu->addAction(wireframeAction_);
 
     auto* workspaceMenu = menuBar()->addMenu(tr("工作区"));
     workspaceMenu->addAction(preprocessingAction_);
@@ -427,6 +490,10 @@ void WorkbenchMainWindow::createMenus() {
     auto* meshMenu = menuBar()->addMenu(tr("网格"));
     meshMenu->addAction(generateMeshAction_);
     meshMenu->addAction(clearMeshAction_);
+    auto* displayInPostprocessingAction =
+        meshMenu->addAction(tr("在后处理中显示"));
+    connect(displayInPostprocessingAction, &QAction::triggered,
+            this, [this] { displayMeshInPostprocessing(); });
     meshMenu->addSeparator();
     meshMenu->addAction(importHmAsciiAction_);
     meshMenu->addAction(exportHmAsciiAction_);
@@ -472,6 +539,10 @@ void WorkbenchMainWindow::createToolBar() {
     toolBar->addSeparator();
     toolBar->addAction(generateMeshAction_);
     toolBar->addAction(clearMeshAction_);
+    toolBar->addSeparator();
+    toolBar->addAction(surfaceWithEdgesAction_);
+    toolBar->addAction(surfaceOnlyAction_);
+    toolBar->addAction(wireframeAction_);
 }
 
 void WorkbenchMainWindow::createDockWidgets() {
@@ -493,8 +564,14 @@ void WorkbenchMainWindow::createDockWidgets() {
     projectRoot->appendRow(materialRootItem_);
     sectionRootItem_ = new QStandardItem(tr("截面"));
     projectRoot->appendRow(sectionRootItem_);
-    projectRoot->appendRow(new QStandardItem(tr("分析")));
-    projectRoot->appendRow(new QStandardItem(tr("结果")));
+    analysisRootItem_ = new QStandardItem(tr("分析"));
+    boundaryConditionRootItem_ = new QStandardItem(tr("边界条件"));
+    analysisRootItem_->appendRow(boundaryConditionRootItem_);
+    projectRoot->appendRow(analysisRootItem_);
+    resultRootItem_ = new QStandardItem(tr("结果"));
+    currentPostMeshRootItem_ = new QStandardItem(tr("当前网格"));
+    resultRootItem_->appendRow(currentPostMeshRootItem_);
+    projectRoot->appendRow(resultRootItem_);
     projectModel_->appendRow(projectRoot);
     projectTree_->setModel(projectModel_);
     projectTree_->expandAll();
@@ -552,16 +629,10 @@ void WorkbenchMainWindow::createDockWidgets() {
 void WorkbenchMainWindow::createCentralWorkspace() {
     workspaceStack_ = new QStackedWidget(this);
 
-    auto createPlaceholder = [this](const QString& text) {
-        auto* label = new QLabel(text, workspaceStack_);
-        label->setAlignment(Qt::AlignCenter);
-        return label;
-    };
-
     occViewWidget_ = new OccViewWidget(workspaceStack_);
+    vtkPostViewWidget_ = new VtkPostViewWidget(workspaceStack_);
     workspaceStack_->addWidget(occViewWidget_);
-    workspaceStack_->addWidget(
-        createPlaceholder(tr("VTK 后处理视窗尚未接入")));
+    workspaceStack_->addWidget(vtkPostViewWidget_);
     setCentralWidget(workspaceStack_);
 }
 
@@ -575,6 +646,7 @@ void WorkbenchMainWindow::switchToPreprocessing() {
     updateWorkspaceProperty(tr("前处理"));
     setViewActionsEnabled(true);
     setSelectionActionsEnabled(true);
+    updatePostViewActionStates();
     statusBar()->showMessage(tr("已切换到前处理工作区"), 3000);
 }
 
@@ -583,7 +655,9 @@ void WorkbenchMainWindow::switchToPostprocessing() {
     postprocessingAction_->setChecked(true);
     updateWorkspaceProperty(tr("后处理"));
     setViewActionsEnabled(false);
+    fitAllAction_->setEnabled(true);
     setSelectionActionsEnabled(false);
+    updatePostViewActionStates();
     statusBar()->showMessage(tr("已切换到后处理工作区"), 3000);
 }
 
@@ -650,6 +724,7 @@ void WorkbenchMainWindow::addGeometryTreeItem(int objectId,
     selectedMaterialId_ = -1;
     selectedSectionId_ = -1;
     selectedNamedSelectionId_ = -1;
+    selectedConstraintId_ = -1;
     selectedMeshObjectId_ = -1;
     selectedGeometryObjectId_ = objectId;
     updateMaterialActionStates();
@@ -682,6 +757,42 @@ void WorkbenchMainWindow::handleProjectItemChanged(QStandardItem* item) {
 void WorkbenchMainWindow::handleProjectItemClicked(
     const QModelIndex& index) {
     QStandardItem* item = projectModel_->itemFromIndex(index);
+    const int currentPostMeshId = postMeshObjectId(item);
+    if (currentPostMeshId >= 0) {
+        selectedGeometryObjectId_ = -1;
+        selectedMeshObjectId_ = -1;
+        selectedMaterialId_ = -1;
+        selectedSectionId_ = -1;
+        selectedNamedSelectionId_ = -1;
+        selectedConstraintId_ = -1;
+        occViewWidget_->clearSelection();
+        showPostprocessingMeshProperties(currentPostMeshId);
+        if (const MeshObject* mesh =
+                occViewWidget_->findMesh(currentPostMeshId)) {
+            statusBar()->showMessage(
+                tr("后处理：%1").arg(mesh->name), 3000);
+        }
+        return;
+    }
+    const int currentConstraintId = constraintId(item);
+    if (currentConstraintId >= 0) {
+        selectedGeometryObjectId_ = -1;
+        selectedMeshObjectId_ = -1;
+        selectedMaterialId_ = -1;
+        selectedSectionId_ = -1;
+        selectedNamedSelectionId_ = -1;
+        selectedConstraintId_ = currentConstraintId;
+        syncingTreeSelection_ = true;
+        occViewWidget_->clearSelection();
+        syncingTreeSelection_ = false;
+        showConstraintProperties(currentConstraintId);
+        if (const auto* constraint =
+                constraintManager_->findConstraint(currentConstraintId)) {
+            statusBar()->showMessage(
+                tr("当前约束：%1").arg(fromUtf8(constraint->name)), 3000);
+        }
+        return;
+    }
     const int currentNamedSelectionId = namedSelectionId(item);
     if (currentNamedSelectionId >= 0) {
         selectedGeometryObjectId_ = -1;
@@ -689,6 +800,7 @@ void WorkbenchMainWindow::handleProjectItemClicked(
         selectedMaterialId_ = -1;
         selectedSectionId_ = -1;
         selectedNamedSelectionId_ = currentNamedSelectionId;
+        selectedConstraintId_ = -1;
         locateSelectedNamedSelection(false);
         updateMaterialActionStates();
         updateSectionActionStates();
@@ -699,6 +811,7 @@ void WorkbenchMainWindow::handleProjectItemClicked(
         selectedGeometryObjectId_ = -1;
         selectedMeshObjectId_ = -1;
         selectedNamedSelectionId_ = -1;
+        selectedConstraintId_ = -1;
         selectedMaterialId_ = -1;
         selectedSectionId_ = currentSectionId;
         selectedNamedSelectionId_ = -1;
@@ -713,6 +826,7 @@ void WorkbenchMainWindow::handleProjectItemClicked(
         selectedGeometryObjectId_ = -1;
         selectedMeshObjectId_ = -1;
         selectedNamedSelectionId_ = -1;
+        selectedConstraintId_ = -1;
         selectedMaterialId_ = currentMaterialId;
         selectedSectionId_ = -1;
         selectedNamedSelectionId_ = -1;
@@ -732,6 +846,7 @@ void WorkbenchMainWindow::handleProjectItemClicked(
         selectedMaterialId_ = -1;
         selectedSectionId_ = -1;
         selectedNamedSelectionId_ = -1;
+        selectedConstraintId_ = -1;
         const MeshObject* mesh = occViewWidget_->findMesh(currentMeshId);
         if (mesh != nullptr) {
             selectedMeshObjectId_ = currentMeshId;
@@ -750,6 +865,7 @@ void WorkbenchMainWindow::handleProjectItemClicked(
         selectedMaterialId_ = -1;
         selectedSectionId_ = -1;
         selectedNamedSelectionId_ = -1;
+        selectedConstraintId_ = -1;
         selectedMeshObjectId_ = -1;
         selectedGeometryObjectId_ = objectId;
         updateMaterialActionStates();
@@ -772,6 +888,7 @@ void WorkbenchMainWindow::handleProjectItemClicked(
     selectedMaterialId_ = -1;
     selectedSectionId_ = -1;
     selectedNamedSelectionId_ = -1;
+    selectedConstraintId_ = -1;
     occViewWidget_->clearNamedSelectionHighlight();
     updateMaterialActionStates();
     updateSectionActionStates();
@@ -784,10 +901,19 @@ void WorkbenchMainWindow::handleProjectItemClicked(
 
 void WorkbenchMainWindow::handleProjectItemDoubleClicked(
     const QModelIndex& index) {
+    const int currentConstraintId =
+        constraintId(projectModel_->itemFromIndex(index));
+    if (currentConstraintId >= 0) {
+        selectedConstraintId_ = currentConstraintId;
+        locateSelectedConstraint(true);
+        editSelectedConstraint();
+        return;
+    }
     const int currentNamedSelectionId =
         namedSelectionId(projectModel_->itemFromIndex(index));
     if (currentNamedSelectionId >= 0) {
         selectedNamedSelectionId_ = currentNamedSelectionId;
+        selectedConstraintId_ = -1;
         locateSelectedNamedSelection(true);
         return;
     }
@@ -803,6 +929,7 @@ void WorkbenchMainWindow::handleProjectItemDoubleClicked(
         sectionId(projectModel_->itemFromIndex(index));
     if (currentSectionId >= 0) {
         selectedSectionId_ = currentSectionId;
+        selectedConstraintId_ = -1;
         updateSectionActionStates();
         editSelectedSection();
     }
@@ -812,6 +939,43 @@ void WorkbenchMainWindow::showProjectContextMenu(
     const QPoint& position) {
     const QModelIndex index = projectTree_->indexAt(position);
     QStandardItem* item = projectModel_->itemFromIndex(index);
+    if (item == boundaryConditionRootItem_) {
+        QMenu menu(this);
+        menu.addAction(newFixedConstraintAction_);
+        menu.addAction(newDisplacementConstraintAction_);
+        menu.exec(projectTree_->viewport()->mapToGlobal(position));
+        return;
+    }
+    const int currentConstraintId = constraintId(item);
+    if (currentConstraintId >= 0) {
+        selectedConstraintId_ = currentConstraintId;
+        selectedNamedSelectionId_ = -1;
+        selectedMaterialId_ = -1;
+        selectedSectionId_ = -1;
+        selectedGeometryObjectId_ = -1;
+        selectedMeshObjectId_ = -1;
+        QMenu menu(this);
+        QAction* editAction = menu.addAction(tr("编辑"));
+        QAction* renameAction = menu.addAction(tr("重命名"));
+        QAction* duplicateAction = menu.addAction(tr("复制"));
+        QAction* locateAction = menu.addAction(tr("定位作用区域"));
+        menu.addSeparator();
+        QAction* deleteAction = menu.addAction(tr("删除"));
+        QAction* chosen =
+            menu.exec(projectTree_->viewport()->mapToGlobal(position));
+        if (chosen == editAction) {
+            editSelectedConstraint();
+        } else if (chosen == renameAction) {
+            renameSelectedConstraint();
+        } else if (chosen == duplicateAction) {
+            duplicateSelectedConstraint();
+        } else if (chosen == locateAction) {
+            locateSelectedConstraint(true);
+        } else if (chosen == deleteAction) {
+            deleteSelectedConstraint();
+        }
+        return;
+    }
     if (item == namedSelectionRootItem_) {
         QMenu menu(this);
         menu.addAction(createNamedSelectionAction_);
@@ -821,6 +985,7 @@ void WorkbenchMainWindow::showProjectContextMenu(
     const int currentNamedSelectionId = namedSelectionId(item);
     if (currentNamedSelectionId >= 0) {
         selectedNamedSelectionId_ = currentNamedSelectionId;
+        selectedConstraintId_ = -1;
         selectedMaterialId_ = -1;
         selectedSectionId_ = -1;
         selectedGeometryObjectId_ = -1;
@@ -834,6 +999,11 @@ void WorkbenchMainWindow::showProjectContextMenu(
         QAction* removeItemsAction = menu.addAction(tr("移除当前选择"));
         menu.addSeparator();
         QAction* deleteAction = menu.addAction(tr("删除"));
+        menu.addSeparator();
+        QAction* fixedConstraintAction =
+            menu.addAction(tr("创建固定约束"));
+        QAction* displacementConstraintAction =
+            menu.addAction(tr("创建位移约束"));
         QAction* chosen =
             menu.exec(projectTree_->viewport()->mapToGlobal(position));
         if (chosen == locateAction) {
@@ -848,6 +1018,10 @@ void WorkbenchMainWindow::showProjectContextMenu(
             removeSelectedNamedSelectionItems();
         } else if (chosen == deleteAction) {
             deleteSelectedNamedSelection();
+        } else if (chosen == fixedConstraintAction) {
+            createFixedConstraint(currentNamedSelectionId);
+        } else if (chosen == displacementConstraintAction) {
+            createDisplacementConstraint(currentNamedSelectionId);
         }
         return;
     }
@@ -860,6 +1034,7 @@ void WorkbenchMainWindow::showProjectContextMenu(
     const int currentSectionId = sectionId(item);
     if (currentSectionId >= 0) {
         selectedSectionId_ = currentSectionId;
+        selectedConstraintId_ = -1;
         selectedMaterialId_ = -1;
         selectedNamedSelectionId_ = -1;
         selectedGeometryObjectId_ = -1;
@@ -886,6 +1061,7 @@ void WorkbenchMainWindow::showProjectContextMenu(
     const int currentMaterialId = materialId(item);
     if (currentMaterialId >= 0) {
         selectedMaterialId_ = currentMaterialId;
+        selectedConstraintId_ = -1;
         selectedNamedSelectionId_ = -1;
         selectedGeometryObjectId_ = -1;
         selectedMeshObjectId_ = -1;
@@ -901,6 +1077,7 @@ void WorkbenchMainWindow::showProjectContextMenu(
     }
     const int currentMeshId = meshObjectId(item);
     if (currentMeshId >= 0) {
+        selectedConstraintId_ = -1;
         const MeshObject* mesh = occViewWidget_->findMesh(currentMeshId);
         if (mesh == nullptr) {
             return;
@@ -908,6 +1085,9 @@ void WorkbenchMainWindow::showProjectContextMenu(
         QMenu menu(this);
         QAction* showAction = menu.addAction(tr("显示"));
         QAction* hideAction = menu.addAction(tr("隐藏"));
+        menu.addSeparator();
+        QAction* postprocessAction =
+            menu.addAction(tr("在后处理中显示"));
         menu.addSeparator();
         QAction* clearAction = menu.addAction(
             mesh->importedHmAscii ? tr("删除") : tr("清除"));
@@ -925,6 +1105,8 @@ void WorkbenchMainWindow::showProjectContextMenu(
             setMeshVisible(item, true);
         } else if (selectedAction == hideAction) {
             setMeshVisible(item, false);
+        } else if (selectedAction == postprocessAction) {
+            displayMeshInPostprocessing(currentMeshId);
         } else if (selectedAction == clearAction) {
             selectedMeshObjectId_ = currentMeshId;
             selectedGeometryObjectId_ = mesh->geometryObjectId;
@@ -943,6 +1125,7 @@ void WorkbenchMainWindow::showProjectContextMenu(
     if (geometryObjectId(item) < 0) {
         return;
     }
+    selectedConstraintId_ = -1;
 
     QMenu menu(this);
     QAction* showAction = menu.addAction(tr("显示"));
@@ -1126,6 +1309,7 @@ void WorkbenchMainWindow::deleteGeometryObject(QStandardItem* item) {
         return;
     }
 
+    clearPostprocessingMeshIfMatches(associatedMeshId);
     geometryItems_.remove(objectId);
     assignmentManager_.unassign(
         emilcae::core::SectionAssignmentTargetType::GeometryObject,
@@ -1196,6 +1380,10 @@ void WorkbenchMainWindow::clearAllGeometryObjects() {
         }
     }
     occViewWidget_->clearGeometryObjects();
+    if (currentPostMeshId_ >= 0 &&
+        occViewWidget_->findMesh(currentPostMeshId_) == nullptr) {
+        clearPostprocessingMeshIfMatches(currentPostMeshId_);
+    }
     geometryRootItem_->removeRows(0, geometryRootItem_->rowCount());
     geometryItems_.clear();
     for (auto iterator = meshItems_.begin(); iterator != meshItems_.end();) {
@@ -1330,6 +1518,7 @@ void WorkbenchMainWindow::clearSelectedMesh() {
         return;
     }
 
+    clearPostprocessingMeshIfMatches(currentMeshId);
     assignmentManager_.unassign(
         emilcae::core::SectionAssignmentTargetType::MeshObject,
         currentMeshId);
@@ -1456,6 +1645,143 @@ void WorkbenchMainWindow::exportHmAsciiMesh() {
     statusBar()->showMessage(tr("HMASCII 网格导出成功"), 5000);
 }
 
+void WorkbenchMainWindow::displayMeshInPostprocessing(int meshId) {
+    const int requestedMeshId = meshId >= 0 ? meshId
+                                            : selectedMeshObjectId_;
+    const MeshObject* mesh = occViewWidget_->findMesh(requestedMeshId);
+    if (mesh == nullptr) {
+        QMessageBox::information(
+            this, tr("后处理显示"),
+            tr("请先在工程树中选择需要显示的网格。"));
+        return;
+    }
+
+    if (!vtkPostViewWidget_->displayMesh(mesh->data)) {
+        const QString reason = vtkPostViewWidget_->lastError().isEmpty()
+            ? tr("未知错误")
+            : vtkPostViewWidget_->lastError();
+        statusBar()->showMessage(tr("网格无法显示"), 5000);
+        messageLog_->appendPlainText(
+            tr("网格无法在后处理视窗中显示：%1\n原因：%2")
+                .arg(mesh->name, reason));
+        QMessageBox::critical(
+            this, tr("网格无法显示"),
+            tr("网格无法显示：%1").arg(reason));
+        return;
+    }
+
+    currentPostMeshId_ = requestedMeshId;
+    if (currentPostMeshItem_ != nullptr &&
+        currentPostMeshItem_->parent() != nullptr) {
+        currentPostMeshItem_->parent()->removeRow(
+            currentPostMeshItem_->row());
+    }
+    currentPostMeshItem_ = new QStandardItem(mesh->name);
+    currentPostMeshItem_->setEditable(false);
+    currentPostMeshItem_->setData(requestedMeshId,
+                                  PostMeshObjectIdRole);
+    currentPostMeshRootItem_->appendRow(currentPostMeshItem_);
+    projectTree_->expand(resultRootItem_->index());
+    projectTree_->expand(currentPostMeshRootItem_->index());
+
+    surfaceWithEdgesAction_->setChecked(true);
+    switchToPostprocessing();
+    projectTree_->setCurrentIndex(currentPostMeshItem_->index());
+    showPostprocessingMeshProperties(requestedMeshId);
+    setWindowTitle(tr("QTCAE 仿真工作台 - 后处理 - %1")
+                       .arg(mesh->name));
+    statusBar()->showMessage(tr("后处理：%1").arg(mesh->name), 5000);
+    messageLog_->appendPlainText(
+        tr("已在后处理视窗中显示网格：%1；节点 %2，四面体 %3。")
+            .arg(mesh->name)
+            .arg(mesh->data.nodes.size())
+            .arg(mesh->data.tetrahedra.size()));
+}
+
+void WorkbenchMainWindow::clearPostprocessingMeshIfMatches(int meshId) {
+    if (meshId < 0 || meshId != currentPostMeshId_) {
+        return;
+    }
+    vtkPostViewWidget_->clearScene();
+    if (currentPostMeshItem_ != nullptr &&
+        currentPostMeshItem_->parent() != nullptr) {
+        currentPostMeshItem_->parent()->removeRow(
+            currentPostMeshItem_->row());
+    }
+    currentPostMeshItem_ = nullptr;
+    currentPostMeshId_ = -1;
+    updatePostViewActionStates();
+    if (workspaceStack_->currentIndex() == 1) {
+        showDefaultProperties();
+        setWindowTitle(tr("QTCAE 仿真工作台"));
+        statusBar()->showMessage(tr("当前后处理网格已清除"), 3000);
+    }
+}
+
+void WorkbenchMainWindow::showPostprocessingMeshProperties(int meshId) {
+    const MeshObject* mesh = occViewWidget_->findMesh(meshId);
+    if (mesh == nullptr || meshId != currentPostMeshId_) {
+        showDefaultProperties();
+        return;
+    }
+    setPropertyRows({
+        {tr("名称"), mesh->name},
+        {tr("类型"), tr("四面体网格")},
+        {tr("节点数"), QString::number(mesh->data.nodes.size())},
+        {tr("四面体数"), QString::number(mesh->data.tetrahedra.size())},
+        {tr("显示模式"), postDisplayModeName()},
+        {tr("结果数据"), tr("未加载")}
+    });
+}
+
+void WorkbenchMainWindow::setPostDisplayMode(
+    VtkMeshDisplayMode mode) {
+    if (workspaceStack_->currentIndex() != 1 ||
+        !vtkPostViewWidget_->hasMesh()) {
+        return;
+    }
+    switch (mode) {
+    case VtkMeshDisplayMode::SurfaceWithEdges:
+        vtkPostViewWidget_->setSurfaceWithEdges();
+        break;
+    case VtkMeshDisplayMode::SurfaceOnly:
+        vtkPostViewWidget_->setSurfaceOnly();
+        break;
+    case VtkMeshDisplayMode::Wireframe:
+        vtkPostViewWidget_->setWireframe();
+        break;
+    }
+    showPostprocessingMeshProperties(currentPostMeshId_);
+    statusBar()->showMessage(
+        tr("后处理显示模式：%1").arg(postDisplayModeName()), 3000);
+}
+
+QString WorkbenchMainWindow::postDisplayModeName() const {
+    switch (vtkPostViewWidget_->displayMode()) {
+    case VtkMeshDisplayMode::SurfaceWithEdges:
+        return tr("表面加边线");
+    case VtkMeshDisplayMode::SurfaceOnly:
+        return tr("仅表面");
+    case VtkMeshDisplayMode::Wireframe:
+        return tr("线框");
+    }
+    return {};
+}
+
+void WorkbenchMainWindow::updatePostViewActionStates() {
+    const bool inPostprocessing = workspaceStack_ != nullptr &&
+                                  workspaceStack_->currentIndex() == 1;
+    const bool enabled = inPostprocessing &&
+                         vtkPostViewWidget_ != nullptr &&
+                         vtkPostViewWidget_->hasMesh();
+    surfaceWithEdgesAction_->setEnabled(enabled);
+    surfaceOnlyAction_->setEnabled(enabled);
+    wireframeAction_->setEnabled(enabled);
+    if (inPostprocessing) {
+        fitAllAction_->setEnabled(enabled);
+    }
+}
+
 void WorkbenchMainWindow::createBlankMaterial() {
     createMaterial({});
 }
@@ -1502,6 +1828,7 @@ void WorkbenchMainWindow::createMaterial(
     addMaterialTreeItem(stored->id, name);
     selectedMaterialId_ = stored->id;
     selectedNamedSelectionId_ = -1;
+    selectedConstraintId_ = -1;
     selectedGeometryObjectId_ = -1;
     selectedMeshObjectId_ = -1;
     showMaterialProperties(stored->id);
@@ -1620,6 +1947,7 @@ void WorkbenchMainWindow::duplicateSelectedMaterial() {
     addMaterialTreeItem(stored->id, name);
     selectedMaterialId_ = stored->id;
     selectedNamedSelectionId_ = -1;
+    selectedConstraintId_ = -1;
     showMaterialProperties(stored->id);
     updateMaterialActionStates();
     messageLog_->appendPlainText(tr("已创建材料：%1").arg(name));
@@ -1769,6 +2097,7 @@ void WorkbenchMainWindow::createSolidSection() {
     addSectionTreeItem(section->id, fromUtf8(section->name));
     selectedSectionId_ = section->id;
     selectedNamedSelectionId_ = -1;
+    selectedConstraintId_ = -1;
     showSectionProperties(section->id);
     updateSectionActionStates();
     messageLog_->appendPlainText(
@@ -1859,6 +2188,7 @@ void WorkbenchMainWindow::duplicateSelectedSection() {
     addSectionTreeItem(result.sectionId, name);
     selectedSectionId_ = result.sectionId;
     selectedNamedSelectionId_ = -1;
+    selectedConstraintId_ = -1;
     showSectionProperties(result.sectionId);
     updateSectionActionStates();
     messageLog_->appendPlainText(tr("已创建实体截面：%1").arg(name));
@@ -2080,6 +2410,361 @@ QString WorkbenchMainWindow::uniqueSectionCopyName(
     }
 }
 
+void WorkbenchMainWindow::createFixedConstraint(int namedSelectionId) {
+    createConstraint(emilcae::core::ConstraintType::Fixed,
+                     namedSelectionId);
+}
+
+void WorkbenchMainWindow::createDisplacementConstraint(
+    int namedSelectionId) {
+    createConstraint(emilcae::core::ConstraintType::Displacement,
+                     namedSelectionId);
+}
+
+void WorkbenchMainWindow::createConstraint(
+    emilcae::core::ConstraintType type, int namedSelectionId) {
+    const auto selections = namedSelectionManager_->namedSelections();
+    if (selections.empty()) {
+        QMessageBox::information(
+            this, tr("新建约束"),
+            tr("请先创建至少一个几何命名选择集。"));
+        return;
+    }
+    if (namedSelectionId >= 0 &&
+        namedSelectionValiditySummary(namedSelectionId).validItemCount == 0) {
+        QMessageBox::warning(
+            this, tr("作用区域无效"),
+            tr("当前命名选择集没有有效成员，不能创建约束。"));
+        return;
+    }
+    DisplacementConstraintDialog dialog(
+        type, selections,
+        [this](const QString& name, int excludedId) {
+            return isConstraintNameAvailable(name, excludedId);
+        },
+        -1, this);
+    dialog.setName(uniqueConstraintName(type));
+    if (namedSelectionId >= 0) {
+        dialog.setNamedSelectionId(namedSelectionId);
+    }
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    emilcae::core::DisplacementConstraint constraint = dialog.constraint();
+    if (!confirmUsableConstraintRegion(constraint.namedSelectionId, true)) {
+        return;
+    }
+    const auto result = constraintManager_->createConstraint(constraint);
+    if (!result.success) {
+        QMessageBox::warning(this, tr("创建约束失败"),
+                             constraintErrorMessage(result.error));
+        return;
+    }
+    const auto* stored = constraintManager_->findConstraint(
+        result.constraintId);
+    if (stored == nullptr) {
+        return;
+    }
+    addConstraintTreeItem(stored->id, fromUtf8(stored->name));
+    selectedConstraintId_ = stored->id;
+    selectedNamedSelectionId_ = -1;
+    selectedMaterialId_ = -1;
+    selectedSectionId_ = -1;
+    selectedGeometryObjectId_ = -1;
+    selectedMeshObjectId_ = -1;
+    showConstraintProperties(stored->id);
+    messageLog_->appendPlainText(
+        tr("已创建%1：%2")
+            .arg(constraintTypeName(stored->type), fromUtf8(stored->name)));
+    statusBar()->showMessage(tr("约束创建成功"), 3000);
+}
+
+void WorkbenchMainWindow::editSelectedConstraint() {
+    const auto* current = constraintManager_->findConstraint(
+        selectedConstraintId_);
+    if (current == nullptr) {
+        return;
+    }
+    const int id = current->id;
+    const auto selections = namedSelectionManager_->namedSelections();
+    DisplacementConstraintDialog dialog(
+        current->type, selections,
+        [this](const QString& name, int excludedId) {
+            return isConstraintNameAvailable(name, excludedId);
+        },
+        id, this);
+    dialog.setConstraint(*current);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    emilcae::core::DisplacementConstraint edited = dialog.constraint();
+    if (!confirmUsableConstraintRegion(edited.namedSelectionId, true)) {
+        return;
+    }
+    edited.id = id;
+    const auto result = constraintManager_->updateConstraint(id, edited);
+    if (!result.success) {
+        QMessageBox::warning(this, tr("编辑约束失败"),
+                             constraintErrorMessage(result.error));
+        return;
+    }
+    updateConstraintDisplays();
+    showConstraintProperties(id);
+    messageLog_->appendPlainText(
+        tr("已更新约束：%1").arg(fromUtf8(edited.name)));
+}
+
+void WorkbenchMainWindow::renameSelectedConstraint() {
+    const auto* current = constraintManager_->findConstraint(
+        selectedConstraintId_);
+    if (current == nullptr) {
+        return;
+    }
+    const int id = current->id;
+    bool accepted = false;
+    const QString name = QInputDialog::getText(
+        this, tr("重命名约束"), tr("名称："), QLineEdit::Normal,
+        fromUtf8(current->name), &accepted).trimmed();
+    if (!accepted) {
+        return;
+    }
+    emilcae::core::DisplacementConstraint renamed = *current;
+    renamed.name = toUtf8(name);
+    const auto result = constraintManager_->updateConstraint(id, renamed);
+    if (!result.success) {
+        QMessageBox::warning(this, tr("重命名约束失败"),
+                             constraintErrorMessage(result.error));
+        return;
+    }
+    updateConstraintDisplays();
+    showConstraintProperties(id);
+    messageLog_->appendPlainText(tr("已重命名约束：%1").arg(name));
+}
+
+void WorkbenchMainWindow::duplicateSelectedConstraint() {
+    const auto* current = constraintManager_->findConstraint(
+        selectedConstraintId_);
+    if (current == nullptr) {
+        return;
+    }
+    emilcae::core::DisplacementConstraint copy = *current;
+    copy.id = -1;
+    copy.name = toUtf8(uniqueConstraintCopyName(fromUtf8(current->name)));
+    const auto result = constraintManager_->createConstraint(copy);
+    if (!result.success) {
+        QMessageBox::warning(this, tr("复制约束失败"),
+                             constraintErrorMessage(result.error));
+        return;
+    }
+    const auto* stored = constraintManager_->findConstraint(
+        result.constraintId);
+    if (stored == nullptr) {
+        return;
+    }
+    addConstraintTreeItem(stored->id, fromUtf8(stored->name));
+    selectedConstraintId_ = stored->id;
+    showConstraintProperties(stored->id);
+    messageLog_->appendPlainText(
+        tr("已复制约束：%1").arg(fromUtf8(stored->name)));
+}
+
+void WorkbenchMainWindow::locateSelectedConstraint(bool notify) {
+    const auto* constraint = constraintManager_->findConstraint(
+        selectedConstraintId_);
+    const auto* selection = constraint != nullptr
+        ? namedSelectionManager_->find(constraint->namedSelectionId)
+        : nullptr;
+    if (constraint == nullptr || selection == nullptr) {
+        if (notify) {
+            QMessageBox::warning(this, tr("定位约束"),
+                                 tr("约束的作用区域已经失效。"));
+        }
+        return;
+    }
+    const NamedSelectionResolveResult resolved =
+        namedSelectionResolver_->resolve(*selection);
+    std::vector<TopoDS_Shape> visibleShapes;
+    std::size_t hiddenCount = 0;
+    for (const ResolvedNamedSelectionItem& item : resolved.validItems) {
+        if (item.sourceVisible) {
+            visibleShapes.push_back(item.shape);
+        } else {
+            ++hiddenCount;
+        }
+    }
+    syncingTreeSelection_ = true;
+    occViewWidget_->clearSelection();
+    if (!visibleShapes.empty()) {
+        occViewWidget_->highlightNamedSelection(visibleShapes);
+    }
+    if (QStandardItem* item = constraintItem(constraint->id)) {
+        projectTree_->setCurrentIndex(item->index());
+    }
+    syncingTreeSelection_ = false;
+    showConstraintProperties(constraint->id);
+    if (notify && (!resolved.invalidItems.empty() || hiddenCount > 0)) {
+        QMessageBox::information(
+            this, tr("定位约束"),
+            tr("作用区域中有 %1 个失效成员、%2 个隐藏成员。")
+                .arg(resolved.invalidItems.size())
+                .arg(hiddenCount));
+    }
+    statusBar()->showMessage(
+        tr("已定位约束作用区域：%1").arg(fromUtf8(constraint->name)),
+        3000);
+}
+
+void WorkbenchMainWindow::deleteSelectedConstraint() {
+    const auto* constraint = constraintManager_->findConstraint(
+        selectedConstraintId_);
+    if (constraint == nullptr) {
+        return;
+    }
+    const int id = constraint->id;
+    const QString name = fromUtf8(constraint->name);
+    if (QMessageBox::question(
+            this, tr("删除约束"),
+            tr("确定要删除约束“%1”吗？").arg(name),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No) != QMessageBox::Yes) {
+        return;
+    }
+    if (!constraintManager_->removeConstraint(id).success) {
+        return;
+    }
+    QStandardItem* item = constraintItem(id);
+    constraintItems_.remove(id);
+    constraintValidityStates_.remove(id);
+    if (item != nullptr) {
+        boundaryConditionRootItem_->removeRow(item->row());
+    }
+    selectedConstraintId_ = -1;
+    occViewWidget_->clearNamedSelectionHighlight();
+    showDefaultProperties();
+    messageLog_->appendPlainText(tr("已删除约束：%1").arg(name));
+}
+
+void WorkbenchMainWindow::addConstraintTreeItem(
+    int id, const QString& name) {
+    auto* item = new QStandardItem(name);
+    item->setData(id, ConstraintIdRole);
+    item->setEditable(false);
+    boundaryConditionRootItem_->appendRow(item);
+    constraintItems_.insert(id, item);
+    projectTree_->expand(analysisRootItem_->index());
+    projectTree_->expand(boundaryConditionRootItem_->index());
+    projectTree_->setCurrentIndex(item->index());
+    updateConstraintDisplays();
+}
+
+emilcae::core::NamedSelectionValiditySummary
+WorkbenchMainWindow::namedSelectionValiditySummary(int id) const {
+    const auto* selection = namedSelectionManager_->find(id);
+    if (selection == nullptr) {
+        return {};
+    }
+    const NamedSelectionResolveResult resolved =
+        namedSelectionResolver_->resolve(*selection);
+    return {resolved.validItems.size(), resolved.invalidItems.size()};
+}
+
+emilcae::core::ConstraintValidity
+WorkbenchMainWindow::constraintValidity(int id) const {
+    return constraintManager_->validity(
+        id, [this](int namedSelectionId) {
+            return namedSelectionValiditySummary(namedSelectionId);
+        });
+}
+
+bool WorkbenchMainWindow::confirmUsableConstraintRegion(
+    int namedSelectionId, bool allowPartial) {
+    const auto summary = namedSelectionValiditySummary(namedSelectionId);
+    if (summary.validItemCount == 0) {
+        QMessageBox::warning(
+            this, tr("作用区域无效"),
+            tr("当前命名选择集没有有效成员，不能创建约束。"));
+        return false;
+    }
+    if (summary.invalidItemCount > 0) {
+        if (!allowPartial) {
+            return false;
+        }
+        return QMessageBox::question(
+                   this, tr("作用区域部分失效"),
+                   tr("所选命名选择集中有 %1 个失效成员。约束将仅保留当前可解析的作用区域，是否继续？")
+                       .arg(summary.invalidItemCount),
+                   QMessageBox::Yes | QMessageBox::No,
+                   QMessageBox::No) == QMessageBox::Yes;
+    }
+    return true;
+}
+
+bool WorkbenchMainWindow::isConstraintNameAvailable(
+    const QString& name, int excludedId) const {
+    const std::string candidate = toUtf8(name.trimmed());
+    const auto constraints = constraintManager_->constraints();
+    return std::none_of(
+        constraints.cbegin(), constraints.cend(),
+        [&candidate, excludedId](
+            const emilcae::core::DisplacementConstraint& constraint) {
+            return constraint.id != excludedId &&
+                   constraint.name == candidate;
+        });
+}
+
+QString WorkbenchMainWindow::uniqueConstraintName(
+    emilcae::core::ConstraintType type) const {
+    const QString base = type == emilcae::core::ConstraintType::Fixed
+        ? tr("固定约束") : tr("位移约束");
+    for (int suffix = 1;; ++suffix) {
+        const QString candidate = tr("%1-%2").arg(base).arg(suffix);
+        if (isConstraintNameAvailable(candidate, -1)) {
+            return candidate;
+        }
+    }
+}
+
+QString WorkbenchMainWindow::uniqueConstraintCopyName(
+    const QString& sourceName) const {
+    const QString base = tr("%1 - 副本").arg(sourceName);
+    if (isConstraintNameAvailable(base, -1)) {
+        return base;
+    }
+    for (int suffix = 2;; ++suffix) {
+        const QString candidate = tr("%1 - 副本 %2")
+                                      .arg(sourceName).arg(suffix);
+        if (isConstraintNameAvailable(candidate, -1)) {
+            return candidate;
+        }
+    }
+}
+
+QString WorkbenchMainWindow::constraintErrorMessage(
+    emilcae::core::ConstraintError error) const {
+    using emilcae::core::ConstraintError;
+    switch (error) {
+    case ConstraintError::None:
+        return {};
+    case ConstraintError::InvalidId:
+        return tr("约束 ID 无效。");
+    case ConstraintError::NotFound:
+        return tr("没有找到指定约束。");
+    case ConstraintError::EmptyName:
+        return tr("约束名称不能为空。");
+    case ConstraintError::DuplicateName:
+        return tr("约束名称不能重复。");
+    case ConstraintError::InvalidNamedSelection:
+        return tr("必须引用一个存在且非空的命名选择集。");
+    case ConstraintError::NoConstrainedDof:
+        return tr("至少需要约束一个平移方向。");
+    case ConstraintError::NonFiniteValue:
+        return tr("位移值必须是有限数值。");
+    case ConstraintError::InvalidFixedConstraint:
+        return tr("固定约束必须固定 X、Y、Z 三个方向且位移值为零。");
+    }
+    return tr("约束操作失败。");
+}
+
 void WorkbenchMainWindow::createNamedSelection() {
     std::vector<emilcae::core::NamedSelectionItem> items;
     emilcae::core::NamedSelectionEntityType entityType;
@@ -2109,6 +2794,7 @@ void WorkbenchMainWindow::createNamedSelection() {
     }
     addNamedSelectionTreeItem(selection->id, fromUtf8(selection->name));
     selectedNamedSelectionId_ = selection->id;
+    selectedConstraintId_ = -1;
     syncingTreeSelection_ = true;
     occViewWidget_->clearSelection();
     syncingTreeSelection_ = false;
@@ -2301,6 +2987,22 @@ void WorkbenchMainWindow::deleteSelectedNamedSelection() {
     }
     const int id = selection->id;
     const QString name = fromUtf8(selection->name);
+    const auto referencingConstraints =
+        constraintManager_->constraintsUsingNamedSelection(id);
+    if (!referencingConstraints.empty()) {
+        QStringList names;
+        for (int constraintId : referencingConstraints) {
+            if (const auto* constraint =
+                    constraintManager_->findConstraint(constraintId)) {
+                names.append(fromUtf8(constraint->name));
+            }
+        }
+        QMessageBox::warning(
+            this, tr("无法删除命名选择集"),
+            tr("命名选择集“%1”正在被以下约束使用：\n- %2\n\n请先删除约束或修改约束的作用区域。")
+                .arg(name, names.join(QStringLiteral("\n- "))));
+        return;
+    }
     if (QMessageBox::question(
             this, tr("删除命名选择集"),
             tr("确定要删除命名选择集“%1”吗？\n"
@@ -2436,6 +3138,8 @@ void WorkbenchMainWindow::addOrUpdateMeshTreeItem(
     projectTree_->setCurrentIndex(item->index());
     selectedMaterialId_ = -1;
     selectedSectionId_ = -1;
+    selectedNamedSelectionId_ = -1;
+    selectedConstraintId_ = -1;
     updateMaterialActionStates();
     updateSectionActionStates();
 }
@@ -2453,6 +3157,8 @@ void WorkbenchMainWindow::addStandaloneMeshTreeItem(
     projectTree_->setCurrentIndex(item->index());
     selectedMaterialId_ = -1;
     selectedSectionId_ = -1;
+    selectedNamedSelectionId_ = -1;
+    selectedConstraintId_ = -1;
     updateMaterialActionStates();
     updateSectionActionStates();
 }
@@ -2471,6 +3177,7 @@ void WorkbenchMainWindow::handleViewSelectionChanged() {
     selectedMaterialId_ = -1;
     selectedSectionId_ = -1;
     selectedNamedSelectionId_ = -1;
+    selectedConstraintId_ = -1;
     occViewWidget_->clearNamedSelectionHighlight();
     updateMaterialActionStates();
     const std::vector<GeometrySelection> selections =
@@ -2666,6 +3373,71 @@ void WorkbenchMainWindow::showNamedSelectionProperties(int id) {
     setPropertyRows(rows);
 }
 
+void WorkbenchMainWindow::showConstraintProperties(int id) {
+    const auto* constraint = constraintManager_->findConstraint(id);
+    if (constraint == nullptr) {
+        showDefaultProperties();
+        return;
+    }
+    const auto* selection = namedSelectionManager_->find(
+        constraint->namedSelectionId);
+    auto dofText = [this](
+        const emilcae::core::TranslationalDofConstraint& dof) {
+        return dof.constrained
+            ? tr("%1 mm").arg(QString::number(
+                  emilcae::core::displacementFromMeters(
+                      dof.value,
+                      emilcae::core::DisplacementUnit::Millimeter),
+                  'g', 12))
+            : tr("自由");
+    };
+    setPropertyRows({
+        {tr("名称"), fromUtf8(constraint->name)},
+        {tr("类型"), constraintTypeName(constraint->type)},
+        {tr("约束 ID"), QString::number(constraint->id)},
+        {tr("作用区域"), selection != nullptr
+                              ? fromUtf8(selection->name)
+                              : tr("命名选择集已丢失")},
+        {tr("选择集类型"), selection != nullptr
+                              ? namedSelectionEntityName(selection->entityType)
+                              : tr("未知")},
+        {tr("状态"), constraintValidityName(constraintValidity(id))},
+        {tr("X 位移"), dofText(constraint->ux)},
+        {tr("Y 位移"), dofText(constraint->uy)},
+        {tr("Z 位移"), dofText(constraint->uz)},
+        {tr("坐标系"), tr("全局")}
+    });
+}
+
+void WorkbenchMainWindow::updateConstraintDisplays() {
+    for (const auto& constraint : constraintManager_->constraints()) {
+        QStandardItem* item = constraintItem(constraint.id);
+        if (item == nullptr) {
+            continue;
+        }
+        const auto validity = constraintValidity(constraint.id);
+        QString text = fromUtf8(constraint.name);
+        if (validity == emilcae::core::ConstraintValidity::PartiallyInvalid) {
+            text += tr("  [部分失效]");
+        } else if (validity == emilcae::core::ConstraintValidity::Invalid) {
+            text += tr("  [失效]");
+        }
+        item->setText(text);
+        const int currentState = static_cast<int>(validity);
+        if (constraintValidityStates_.contains(constraint.id) &&
+            constraintValidityStates_.value(constraint.id) != currentState &&
+            validity != emilcae::core::ConstraintValidity::Valid) {
+            messageLog_->appendPlainText(
+                tr("约束“%1”的作用区域存在失效成员。")
+                    .arg(fromUtf8(constraint.name)));
+        }
+        constraintValidityStates_.insert(constraint.id, currentState);
+    }
+    if (selectedConstraintId_ >= 0) {
+        showConstraintProperties(selectedConstraintId_);
+    }
+}
+
 void WorkbenchMainWindow::updateNamedSelectionDisplays() {
     for (const emilcae::core::NamedSelection& selection :
          namedSelectionManager_->namedSelections()) {
@@ -2685,6 +3457,9 @@ void WorkbenchMainWindow::updateNamedSelectionDisplays() {
     }
     if (selectedNamedSelectionId_ >= 0) {
         showNamedSelectionProperties(selectedNamedSelectionId_);
+    }
+    if (constraintManager_ != nullptr) {
+        updateConstraintDisplays();
     }
 }
 
@@ -2790,6 +3565,16 @@ int WorkbenchMainWindow::meshObjectId(const QStandardItem* item) const {
     return valid ? id : -1;
 }
 
+int WorkbenchMainWindow::postMeshObjectId(
+    const QStandardItem* item) const {
+    if (item == nullptr) {
+        return -1;
+    }
+    bool valid = false;
+    const int id = item->data(PostMeshObjectIdRole).toInt(&valid);
+    return valid ? id : -1;
+}
+
 int WorkbenchMainWindow::materialId(const QStandardItem* item) const {
     if (item == nullptr) {
         return -1;
@@ -2818,6 +3603,16 @@ int WorkbenchMainWindow::namedSelectionId(
     return valid ? id : -1;
 }
 
+int WorkbenchMainWindow::constraintId(
+    const QStandardItem* item) const {
+    if (item == nullptr) {
+        return -1;
+    }
+    bool valid = false;
+    const int id = item->data(ConstraintIdRole).toInt(&valid);
+    return valid ? id : -1;
+}
+
 QStandardItem* WorkbenchMainWindow::geometryItem(int objectId) const {
     return geometryItems_.value(objectId, nullptr);
 }
@@ -2838,9 +3633,24 @@ QStandardItem* WorkbenchMainWindow::namedSelectionItem(int id) const {
     return namedSelectionItems_.value(id, nullptr);
 }
 
+QStandardItem* WorkbenchMainWindow::constraintItem(int id) const {
+    return constraintItems_.value(id, nullptr);
+}
+
 void WorkbenchMainWindow::updateWorkspaceProperty(const QString& workspaceName) {
     Q_UNUSED(workspaceName)
-    if (selectedNamedSelectionId_ >= 0) {
+    if (workspaceStack_ != nullptr &&
+        workspaceStack_->currentIndex() == 1) {
+        if (currentPostMeshId_ >= 0) {
+            showPostprocessingMeshProperties(currentPostMeshId_);
+        } else {
+            showDefaultProperties();
+        }
+        return;
+    }
+    if (selectedConstraintId_ >= 0) {
+        showConstraintProperties(selectedConstraintId_);
+    } else if (selectedNamedSelectionId_ >= 0) {
         showNamedSelectionProperties(selectedNamedSelectionId_);
     } else if (selectedSectionId_ >= 0) {
         showSectionProperties(selectedSectionId_);
