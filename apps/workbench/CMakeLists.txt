@@ -1,3 +1,7 @@
+if(WIN32)
+    set(CMAKE_INSTALL_BINDIR ".")
+endif()
+
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
 find_package(OpenCASCADE REQUIRED COMPONENTS
     FoundationClasses
@@ -149,8 +153,33 @@ if(WIN32)
             "${GMSH_RUNTIME_DLL}"
             $<TARGET_FILE_DIR:QTCAE_Workbench>
     )
+    if(TARGET Qt6::QWindowsIntegrationPlugin)
+        add_custom_command(TARGET QTCAE_Workbench POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:QTCAE_Workbench>/plugins/platforms"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:Qt6::QWindowsIntegrationPlugin>
+                "$<TARGET_FILE_DIR:QTCAE_Workbench>/plugins/platforms"
+        )
+    else()
+        message(WARNING
+            "Qt Windows platform plugin target was not found.")
+    endif()
 
-    set(QTCAE_OCC_DATA_EXCHANGE_DLLS
+    set(QTCAE_OCC_RUNTIME_DLL_NAMES
+        TKernel
+        TKMath
+        TKG2d
+        TKG3d
+        TKGeomBase
+        TKBRep
+        TKGeomAlgo
+        TKTopAlgo
+        TKPrim
+        TKMesh
+        TKService
+        TKV3d
+        TKOpenGl
         TKDE
         TKXSBase
         TKDESTEP
@@ -164,8 +193,10 @@ if(WIN32)
         TKBO
         TKOffset
         TKFillet
+        TKShHealing
+        TKHLR
     )
-    foreach(occ_dll IN LISTS QTCAE_OCC_DATA_EXCHANGE_DLLS)
+    foreach(occ_dll IN LISTS QTCAE_OCC_RUNTIME_DLL_NAMES)
         add_custom_command(TARGET QTCAE_Workbench POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${OpenCASCADE_BINARY_DIR}/${occ_dll}.dll"
@@ -184,4 +215,94 @@ if(WIN32)
                 "$<TARGET_FILE_DIR:QTCAE_Workbench>/resources/occt/${occ_resource}"
         )
     endforeach()
+
+    get_filename_component(
+        QTCAE_OCC_PARENT_DIR "${OpenCASCADE_INSTALL_PREFIX}" DIRECTORY)
+
+    set(QTCAE_OCC_THIRDPARTY_DLL_PATTERNS
+        FreeImage.dll
+        freetype.dll
+        jemalloc.dll
+        tbb12.dll
+        tbbmalloc.dll
+        openvr_api.dll
+        avcodec-*.dll
+        avformat-*.dll
+        avutil-*.dll
+        swscale-*.dll
+    )
+    file(GLOB_RECURSE QTCAE_OCC_THIRDPARTY_DLL_CANDIDATES
+        LIST_DIRECTORIES FALSE
+        "${QTCAE_OCC_PARENT_DIR}/3rdparty*/*.dll"
+    )
+    set(QTCAE_OCC_THIRDPARTY_DLLS)
+    foreach(required_dll IN LISTS QTCAE_OCC_THIRDPARTY_DLL_PATTERNS)
+        set(found_dll "")
+        string(TOLOWER "${required_dll}" required_dll_pattern)
+        string(REPLACE "." "\\." required_dll_regex
+            "${required_dll_pattern}")
+        string(REPLACE "*" ".*" required_dll_regex
+            "${required_dll_regex}")
+        foreach(candidate IN LISTS QTCAE_OCC_THIRDPARTY_DLL_CANDIDATES)
+            get_filename_component(candidate_name "${candidate}" NAME)
+            string(TOLOWER "${candidate_name}" candidate_name_lower)
+            string(TOLOWER "${candidate}" candidate_lower)
+            if(candidate_name_lower MATCHES "^${required_dll_regex}$"
+                    AND NOT candidate_lower MATCHES
+                        "[/\\\\](debug|dbg)[/\\\\]")
+                set(found_dll "${candidate}")
+                break()
+            endif()
+        endforeach()
+        if(found_dll)
+            list(APPEND QTCAE_OCC_THIRDPARTY_DLLS "${found_dll}")
+        else()
+            message(WARNING
+                "Optional OCCT runtime dependency was not found: "
+                "${required_dll}")
+        endif()
+    endforeach()
+
+    if(QTCAE_OCC_THIRDPARTY_DLLS)
+        add_custom_command(TARGET QTCAE_Workbench POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${QTCAE_OCC_THIRDPARTY_DLLS}
+                $<TARGET_FILE_DIR:QTCAE_Workbench>
+            COMMAND_EXPAND_LISTS
+        )
+    endif()
+
+    install(TARGETS QTCAE_Workbench RUNTIME DESTINATION .)
+    install(FILES
+        $<TARGET_RUNTIME_DLLS:QTCAE_Workbench>
+        "${GMSH_RUNTIME_DLL}"
+        DESTINATION .
+    )
+
+    foreach(occ_dll IN LISTS QTCAE_OCC_RUNTIME_DLL_NAMES)
+        install(FILES
+            "${OpenCASCADE_BINARY_DIR}/${occ_dll}.dll"
+            DESTINATION .
+        )
+    endforeach()
+
+    if(QTCAE_OCC_THIRDPARTY_DLLS)
+        install(FILES ${QTCAE_OCC_THIRDPARTY_DLLS} DESTINATION .)
+    endif()
+
+    install(DIRECTORY
+        "${OpenCASCADE_RESOURCE_DIR}/XSMessage"
+        "${OpenCASCADE_RESOURCE_DIR}/SHMessage"
+        "${OpenCASCADE_RESOURCE_DIR}/XSTEPResource"
+        "${OpenCASCADE_RESOURCE_DIR}/StdResource"
+        DESTINATION resources/occt
+    )
+
+    qt_generate_deploy_app_script(
+        TARGET QTCAE_Workbench
+        OUTPUT_SCRIPT QTCAE_QT_DEPLOY_SCRIPT
+        NO_COMPILER_RUNTIME
+        NO_UNSUPPORTED_PLATFORM_ERROR
+    )
+    install(SCRIPT "${QTCAE_QT_DEPLOY_SCRIPT}")
 endif()

@@ -1,6 +1,8 @@
 /build/
 /.vs/
 /out/
+/dist/
+/package/
 *.exe
 *.dll
 *.pdb
