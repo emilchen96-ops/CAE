@@ -7,8 +7,13 @@
 #include "DisplacementConstraintDialog.hpp"
 #include "MaterialEditorDialog.hpp"
 #include "NamedSelectionResolver.hpp"
+#include "ResultControlWidget.hpp"
+#include "ResultFieldProcessor.hpp"
 #include "SectionAssignmentDialog.hpp"
 #include "SolidSectionEditorDialog.hpp"
+#include "VtkResultReader.hpp"
+#include "VtkResultSequenceLoader.hpp"
+#include "VtkResultSequenceScanner.hpp"
 #include "VtkPostViewWidget.hpp"
 
 #include <Bnd_Box.hxx>
@@ -40,8 +45,11 @@
 #include <QToolBar>
 #include <QTreeView>
 
+#include <vtkUnstructuredGrid.h>
+
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 
 namespace {
 
@@ -52,6 +60,26 @@ constexpr int SolidSectionIdRole = Qt::UserRole + 4;
 constexpr int NamedSelectionIdRole = Qt::UserRole + 5;
 constexpr int ConstraintIdRole = Qt::UserRole + 6;
 constexpr int PostMeshObjectIdRole = Qt::UserRole + 7;
+constexpr int ResultNodeKindRole = Qt::UserRole + 8;
+constexpr int ResultFieldIndexRole = Qt::UserRole + 9;
+constexpr int ResultOptionIndexRole = Qt::UserRole + 10;
+constexpr int ResultFieldNameRole = Qt::UserRole + 11;
+constexpr int ResultAssociationRole = Qt::UserRole + 12;
+constexpr int ResultOperationRole = Qt::UserRole + 13;
+constexpr int ResultComponentRole = Qt::UserRole + 14;
+constexpr int ResultFrameNumberRole = Qt::UserRole + 15;
+constexpr int ResultPartPathRole = Qt::UserRole + 16;
+
+enum class ResultTreeNodeKind {
+    None,
+    File,
+    Grid,
+    Field,
+    ScalarOption,
+    Sequence,
+    SequenceFrame,
+    SequencePart
+};
 
 QString fromUtf8(const std::string& value) {
     return QString::fromUtf8(value.data(),
@@ -178,6 +206,12 @@ QString constraintValidityName(emilcae::core::ConstraintValidity validity) {
     return {};
 }
 
+QString resultAssociationName(ResultFieldAssociation association) {
+    return association == ResultFieldAssociation::Point
+        ? QCoreApplication::translate("WorkbenchMainWindow", "节点")
+        : QCoreApplication::translate("WorkbenchMainWindow", "单元");
+}
+
 } // namespace
 
 WorkbenchMainWindow::WorkbenchMainWindow(QWidget* parent)
@@ -214,6 +248,8 @@ WorkbenchMainWindow::WorkbenchMainWindow(QWidget* parent)
     switchToPreprocessing();
 }
 
+WorkbenchMainWindow::~WorkbenchMainWindow() = default;
+
 void WorkbenchMainWindow::createActions() {
     newProjectAction_ = new QAction(tr("新建工程"), this);
     openProjectAction_ = new QAction(tr("打开工程"), this);
@@ -235,6 +271,9 @@ void WorkbenchMainWindow::createActions() {
     clearMeshAction_ = new QAction(tr("清除网格"), this);
     importHmAsciiAction_ = new QAction(tr("导入 HMASCII 网格"), this);
     exportHmAsciiAction_ = new QAction(tr("导出 HMASCII 网格"), this);
+    importVtkResultAction_ = new QAction(tr("导入 VTK 结果"), this);
+    importVtkResultSequenceAction_ =
+        new QAction(tr("导入 VTK 结果序列"), this);
     surfaceWithEdgesAction_ = new QAction(tr("表面加边线"), this);
     surfaceOnlyAction_ = new QAction(tr("仅表面"), this);
     wireframeAction_ = new QAction(tr("线框"), this);
@@ -311,6 +350,10 @@ void WorkbenchMainWindow::createActions() {
             this, &WorkbenchMainWindow::importHmAsciiMesh);
     connect(exportHmAsciiAction_, &QAction::triggered,
             this, &WorkbenchMainWindow::exportHmAsciiMesh);
+    connect(importVtkResultAction_, &QAction::triggered,
+            this, &WorkbenchMainWindow::importVtkResult);
+    connect(importVtkResultSequenceAction_, &QAction::triggered,
+            this, &WorkbenchMainWindow::importVtkResultSequence);
     connect(surfaceWithEdgesAction_, &QAction::triggered, this, [this] {
         setPostDisplayMode(VtkMeshDisplayMode::SurfaceWithEdges);
     });
@@ -438,6 +481,7 @@ void WorkbenchMainWindow::createMenus() {
     viewMenu->addAction(propertiesDock_->toggleViewAction());
     viewMenu->addAction(messageLogDock_->toggleViewAction());
     viewMenu->addAction(taskMonitorDock_->toggleViewAction());
+    viewMenu->addAction(resultControlDock_->toggleViewAction());
     viewMenu->addSeparator();
     auto* standardViewMenu = viewMenu->addMenu(tr("标准视图"));
     standardViewMenu->addAction(axonometricViewAction_);
@@ -498,6 +542,10 @@ void WorkbenchMainWindow::createMenus() {
     meshMenu->addAction(importHmAsciiAction_);
     meshMenu->addAction(exportHmAsciiAction_);
 
+    auto* resultMenu = menuBar()->addMenu(tr("结果"));
+    resultMenu->addAction(importVtkResultAction_);
+    resultMenu->addAction(importVtkResultSequenceAction_);
+
     auto* helpMenu = menuBar()->addMenu(tr("帮助"));
     helpMenu->addAction(aboutAction_);
     helpMenu->addAction(aboutQtAction_);
@@ -510,8 +558,13 @@ void WorkbenchMainWindow::createToolBar() {
     auto* openToolAction = toolBar->addAction(tr("打开"));
     auto* saveToolAction = toolBar->addAction(tr("保存"));
     newToolAction->setEnabled(false);
-    connect(openToolAction, &QAction::triggered,
-            this, &WorkbenchMainWindow::openGeometryFile);
+    connect(openToolAction, &QAction::triggered, this, [this] {
+        if (workspaceStack_->currentIndex() == 1) {
+            importVtkResult();
+        } else {
+            openGeometryFile();
+        }
+    });
     saveToolAction->setEnabled(false);
     toolBar->addSeparator();
     toolBar->addAction(preprocessingAction_);
@@ -621,6 +674,55 @@ void WorkbenchMainWindow::createDockWidgets() {
     taskTable->verticalHeader()->setVisible(false);
     taskMonitorDock_->setWidget(taskTable);
     addDockWidget(Qt::BottomDockWidgetArea, taskMonitorDock_);
+
+    resultControlDock_ = new QDockWidget(tr("结果控制"), this);
+    resultControlDock_->setObjectName("ResultControlDock");
+    resultControlWidget_ =
+        new ResultControlWidget(resultControlDock_);
+    resultControlDock_->setWidget(resultControlWidget_);
+    addDockWidget(Qt::RightDockWidgetArea, resultControlDock_);
+    tabifyDockWidget(propertiesDock_, resultControlDock_);
+    propertiesDock_->raise();
+
+    connect(resultControlWidget_,
+            &ResultControlWidget::frameChangeRequested,
+            this, [this](int frameNumber) {
+                loadVtkResultSequenceFrame(frameNumber);
+            });
+    connect(resultControlWidget_,
+            &ResultControlWidget::scalarSelectionChanged,
+            this, [this] {
+                if (resultControlWidget_->scalarVisible()) {
+                    applySelectedResultScalar();
+                }
+            });
+    connect(resultControlWidget_,
+            &ResultControlWidget::scalarVisibilityChanged,
+            this, [this](bool visible) {
+                if (visible) {
+                    applySelectedResultScalar();
+                } else {
+                    vtkPostViewWidget_->clearScalarField();
+                    currentResultScalarOption_.reset();
+                    currentResultStatistics_.reset();
+                    showLoadedResultProperties();
+                }
+            });
+    connect(resultControlWidget_,
+            &ResultControlWidget::displacementFieldChanged,
+            this, &WorkbenchMainWindow::updateSelectedDisplacementField);
+    connect(resultControlWidget_,
+            &ResultControlWidget::deformationVisibilityChanged,
+            this, &WorkbenchMainWindow::setResultDeformationVisible);
+    connect(resultControlWidget_,
+            &ResultControlWidget::deformationScaleChanged,
+            this, &WorkbenchMainWindow::setResultDeformationScale);
+    connect(resultControlWidget_,
+            &ResultControlWidget::legendVisibilityChanged,
+            this, [this](bool visible) {
+                vtkPostViewWidget_->setLegendVisible(visible);
+                showCurrentResultScalarProperties();
+            });
 
     tabifyDockWidget(messageLogDock_, taskMonitorDock_);
     messageLogDock_->raise();
@@ -757,6 +859,39 @@ void WorkbenchMainWindow::handleProjectItemChanged(QStandardItem* item) {
 void WorkbenchMainWindow::handleProjectItemClicked(
     const QModelIndex& index) {
     QStandardItem* item = projectModel_->itemFromIndex(index);
+    const auto resultKind = item == nullptr
+        ? ResultTreeNodeKind::None
+        : static_cast<ResultTreeNodeKind>(
+              item->data(ResultNodeKindRole).toInt());
+    if (resultKind == ResultTreeNodeKind::File) {
+        showLoadedResultProperties();
+        return;
+    }
+    if (resultKind == ResultTreeNodeKind::Sequence) {
+        showVtkResultSequenceProperties();
+        return;
+    }
+    if (resultKind == ResultTreeNodeKind::SequenceFrame) {
+        showVtkResultSequenceFrameProperties(
+            item->data(ResultFrameNumberRole).toInt());
+        return;
+    }
+    if (resultKind == ResultTreeNodeKind::SequencePart) {
+        showVtkResultSequencePartProperties(
+            item->data(ResultFrameNumberRole).toInt(),
+            item->data(ResultPartPathRole).toString());
+        return;
+    }
+    if (resultKind == ResultTreeNodeKind::Grid) {
+        showResultGridProperties();
+        return;
+    }
+    if (resultKind == ResultTreeNodeKind::Field ||
+        resultKind == ResultTreeNodeKind::ScalarOption) {
+        showResultFieldProperties(
+            item->data(ResultFieldIndexRole).toInt());
+        return;
+    }
     const int currentPostMeshId = postMeshObjectId(item);
     if (currentPostMeshId >= 0) {
         selectedGeometryObjectId_ = -1;
@@ -901,8 +1036,23 @@ void WorkbenchMainWindow::handleProjectItemClicked(
 
 void WorkbenchMainWindow::handleProjectItemDoubleClicked(
     const QModelIndex& index) {
+    QStandardItem* item = projectModel_->itemFromIndex(index);
+    if (item != nullptr &&
+        static_cast<ResultTreeNodeKind>(
+            item->data(ResultNodeKindRole).toInt()) ==
+            ResultTreeNodeKind::SequenceFrame) {
+        loadVtkResultSequenceFrame(
+            item->data(ResultFrameNumberRole).toInt());
+        return;
+    }
+    if (const auto option = resultScalarOption(item)) {
+        if (resultControlWidget_->selectScalarOption(*option)) {
+            showResultScalar(*option);
+        }
+        return;
+    }
     const int currentConstraintId =
-        constraintId(projectModel_->itemFromIndex(index));
+        constraintId(item);
     if (currentConstraintId >= 0) {
         selectedConstraintId_ = currentConstraintId;
         locateSelectedConstraint(true);
@@ -910,7 +1060,7 @@ void WorkbenchMainWindow::handleProjectItemDoubleClicked(
         return;
     }
     const int currentNamedSelectionId =
-        namedSelectionId(projectModel_->itemFromIndex(index));
+        namedSelectionId(item);
     if (currentNamedSelectionId >= 0) {
         selectedNamedSelectionId_ = currentNamedSelectionId;
         selectedConstraintId_ = -1;
@@ -918,7 +1068,7 @@ void WorkbenchMainWindow::handleProjectItemDoubleClicked(
         return;
     }
     const int currentMaterialId =
-        materialId(projectModel_->itemFromIndex(index));
+        materialId(item);
     if (currentMaterialId >= 0) {
         selectedMaterialId_ = currentMaterialId;
         updateMaterialActionStates();
@@ -926,7 +1076,7 @@ void WorkbenchMainWindow::handleProjectItemDoubleClicked(
         return;
     }
     const int currentSectionId =
-        sectionId(projectModel_->itemFromIndex(index));
+        sectionId(item);
     if (currentSectionId >= 0) {
         selectedSectionId_ = currentSectionId;
         selectedConstraintId_ = -1;
@@ -1645,6 +1795,884 @@ void WorkbenchMainWindow::exportHmAsciiMesh() {
     statusBar()->showMessage(tr("HMASCII 网格导出成功"), 5000);
 }
 
+void WorkbenchMainWindow::importVtkResult() {
+    const QString filePath = QFileDialog::getOpenFileName(
+        this, tr("导入 VTK 结果"), {},
+        tr("VTK 非结构网格结果 (*.vtu *.vtk);;"
+           "VTK XML 非结构网格结果 (*.vtu);;"
+           "VTK Legacy 非结构网格结果 (*.vtk);;"
+           "所有文件 (*.*)"));
+    if (filePath.isEmpty()) {
+        return;
+    }
+
+    const VtkResultReader reader;
+    VtkReadResult result;
+    {
+        const WaitCursor waitCursor;
+        result = reader.read(
+            std::filesystem::path(filePath.toStdWString()));
+    }
+    if (!result.success || result.grid == nullptr) {
+        const QString reason = result.errorMessage.empty()
+            ? tr("未知错误")
+            : fromUtf8(result.errorMessage);
+        statusBar()->showMessage(tr("VTK 结果导入失败"), 5000);
+        messageLog_->appendPlainText(
+            tr("VTK 结果导入失败：%1\n原因：%2")
+                .arg(filePath, reason));
+        QMessageBox::critical(this, tr("VTK 结果导入失败"), reason);
+        return;
+    }
+    if (!vtkPostViewWidget_->displayResultGrid(result.grid)) {
+        const QString reason = vtkPostViewWidget_->lastError().isEmpty()
+            ? tr("未知错误")
+            : vtkPostViewWidget_->lastError();
+        statusBar()->showMessage(tr("VTK 结果导入失败"), 5000);
+        messageLog_->appendPlainText(
+            tr("VTK 结果无法显示：%1\n原因：%2")
+                .arg(filePath, reason));
+        QMessageBox::critical(this, tr("VTK 结果无法显示"), reason);
+        return;
+    }
+
+    clearLoadedVtkResult(false);
+    loadedResultFilePath_ = QFileInfo(filePath).absoluteFilePath();
+    loadedResultGrid_ = result.grid;
+    loadedResultFields_ = result.fields;
+    currentPostMeshId_ = -1;
+    currentPostMeshItem_ = nullptr;
+    buildVtkResultTree();
+    resultControlWidget_->setResultFields(loadedResultFields_);
+
+    switchToPostprocessing();
+    resultControlDock_->raise();
+    updateSelectedDisplacementField();
+    if (resultControlWidget_->scalarVisible()) {
+        applySelectedResultScalar();
+    } else {
+        showLoadedResultProperties();
+    }
+
+    setWindowTitle(tr("QTCAE 仿真工作台 - 后处理 - %1")
+                       .arg(QFileInfo(filePath).fileName()));
+    statusBar()->showMessage(tr("VTK 结果导入成功"), 5000);
+    messageLog_->appendPlainText(
+        tr("已导入 VTK 结果：%1；节点 %2，单元 %3，结果字段 %4。")
+            .arg(filePath)
+            .arg(loadedResultGrid_->GetNumberOfPoints())
+            .arg(loadedResultGrid_->GetNumberOfCells())
+            .arg(loadedResultFields_.size()));
+    for (const std::string& warning : result.warnings) {
+        messageLog_->appendPlainText(
+            tr("VTK 警告：%1").arg(fromUtf8(warning)));
+    }
+}
+
+void WorkbenchMainWindow::importVtkResultSequence() {
+    const QString directory = QFileDialog::getExistingDirectory(
+        this, tr("导入 VTK 结果序列"));
+    if (directory.isEmpty()) {
+        return;
+    }
+
+    const VtkResultSequenceScanner scanner;
+    VtkResultSequenceScanResult scanResult;
+    VtkResultSequenceLoadResult loadResult;
+    {
+        const WaitCursor waitCursor;
+        scanResult = scanner.scan(
+            std::filesystem::path(directory.toStdWString()));
+        if (scanResult.success && !scanResult.sequence.frames.empty()) {
+            const VtkResultSequenceLoader loader;
+            loadResult = loader.load(scanResult.sequence.frames.front());
+        }
+    }
+    if (!scanResult.success || scanResult.sequence.frames.empty()) {
+        const QString reason = scanResult.errorMessage.empty()
+            ? tr("目录中没有可用的结果帧。")
+            : fromUtf8(scanResult.errorMessage);
+        statusBar()->showMessage(tr("VTK 结果序列导入失败"), 5000);
+        messageLog_->appendPlainText(
+            tr("VTK 结果序列扫描失败：%1\n原因：%2")
+                .arg(directory, reason));
+        QMessageBox::critical(
+            this, tr("VTK 结果序列导入失败"), reason);
+        return;
+    }
+    if (!loadResult.success || loadResult.grid == nullptr) {
+        const QString reason = loadResult.errorMessage.empty()
+            ? tr("首帧加载失败。")
+            : fromUtf8(loadResult.errorMessage);
+        statusBar()->showMessage(tr("VTK 结果序列导入失败"), 5000);
+        messageLog_->appendPlainText(
+            tr("VTK 结果序列首帧加载失败：%1\n原因：%2")
+                .arg(directory, reason));
+        QMessageBox::critical(
+            this, tr("VTK 结果序列导入失败"), reason);
+        return;
+    }
+    if (!vtkPostViewWidget_->displayResultGrid(
+            loadResult.grid, true)) {
+        const QString reason = vtkPostViewWidget_->lastError().isEmpty()
+            ? tr("未知错误")
+            : vtkPostViewWidget_->lastError();
+        statusBar()->showMessage(tr("VTK 结果序列导入失败"), 5000);
+        QMessageBox::critical(
+            this, tr("VTK 结果序列无法显示"), reason);
+        return;
+    }
+
+    clearLoadedVtkResult(false);
+    loadedResultSequence_ = std::move(scanResult.sequence);
+    loadedResultFrameNumber_ =
+        loadedResultSequence_->frames.front().frameNumber;
+    loadedResultFilePath_ = directory;
+    loadedResultGrid_ = loadResult.grid;
+    loadedResultFields_ = loadResult.fields;
+    currentPostMeshId_ = -1;
+    currentPostMeshItem_ = nullptr;
+    buildVtkResultSequenceTree();
+    resultControlWidget_->setResultFields(loadedResultFields_);
+    std::vector<int> frameNumbers;
+    frameNumbers.reserve(loadedResultSequence_->frames.size());
+    for (const auto& frame : loadedResultSequence_->frames) {
+        frameNumbers.push_back(frame.frameNumber);
+    }
+    resultControlWidget_->setSequenceFrames(
+        frameNumbers, loadedResultFrameNumber_);
+
+    switchToPostprocessing();
+    resultControlDock_->raise();
+    updateSelectedDisplacementField();
+    if (resultControlWidget_->scalarVisible()) {
+        applySelectedResultScalar();
+    } else {
+        showVtkResultSequenceFrameProperties(
+            loadedResultFrameNumber_);
+    }
+    setWindowTitle(
+        tr("QTCAE 仿真工作台 - 后处理 - %1 - 帧 %2")
+            .arg(QFileInfo(directory).fileName())
+            .arg(loadedResultFrameNumber_));
+    statusBar()->showMessage(
+        tr("VTK 结果序列导入成功，当前帧 %1")
+            .arg(loadedResultFrameNumber_), 5000);
+    messageLog_->appendPlainText(
+        tr("已导入 VTK 结果序列：%1；共 %2 帧；当前按需加载帧 %3。")
+            .arg(directory)
+            .arg(loadedResultSequence_->frames.size())
+            .arg(loadedResultFrameNumber_));
+    for (const std::string& warning :
+         loadedResultSequence_->warnings) {
+        messageLog_->appendPlainText(
+            tr("VTK 序列警告：%1").arg(fromUtf8(warning)));
+    }
+    for (const std::string& warning : loadResult.warnings) {
+        messageLog_->appendPlainText(
+            tr("VTK 帧警告：%1").arg(fromUtf8(warning)));
+    }
+}
+
+bool WorkbenchMainWindow::loadVtkResultSequenceFrame(
+    int frameNumber, bool firstLoad) {
+    Q_UNUSED(firstLoad)
+    if (!loadedResultSequence_ ||
+        frameNumber == loadedResultFrameNumber_) {
+        return loadedResultSequence_.has_value();
+    }
+    const auto frameIterator = std::find_if(
+        loadedResultSequence_->frames.begin(),
+        loadedResultSequence_->frames.end(),
+        [frameNumber](const VtkResultSequenceFrame& frame) {
+            return frame.frameNumber == frameNumber;
+        });
+    if (frameIterator == loadedResultSequence_->frames.end()) {
+        return false;
+    }
+
+    const auto previousScalar =
+        resultControlWidget_->selectedScalarOption();
+    const std::string previousDisplacement =
+        resultControlWidget_->selectedDisplacementField();
+    const bool previousScalarVisible =
+        resultControlWidget_->scalarVisible();
+    const bool previousDeformationVisible =
+        resultControlWidget_->deformationVisible();
+    const bool previousLegendVisible =
+        resultControlWidget_->legendVisible();
+    const double previousScale =
+        resultControlWidget_->deformationScale();
+    const VtkMeshDisplayMode previousDisplayMode =
+        vtkPostViewWidget_->displayMode();
+
+    VtkResultSequenceLoadResult loadResult;
+    {
+        const WaitCursor waitCursor;
+        const VtkResultSequenceLoader loader;
+        loadResult = loader.load(*frameIterator);
+    }
+    if (!loadResult.success || loadResult.grid == nullptr) {
+        const QString reason = loadResult.errorMessage.empty()
+            ? tr("未知错误")
+            : fromUtf8(loadResult.errorMessage);
+        resultControlWidget_->selectFrame(loadedResultFrameNumber_);
+        statusBar()->showMessage(tr("结果帧加载失败"), 5000);
+        messageLog_->appendPlainText(
+            tr("VTK 结果帧 %1 加载失败：%2")
+                .arg(frameNumber).arg(reason));
+        QMessageBox::critical(this, tr("结果帧加载失败"), reason);
+        return false;
+    }
+    if (!vtkPostViewWidget_->displayResultGrid(
+            loadResult.grid, false)) {
+        const QString reason = vtkPostViewWidget_->lastError().isEmpty()
+            ? tr("未知错误")
+            : vtkPostViewWidget_->lastError();
+        resultControlWidget_->selectFrame(loadedResultFrameNumber_);
+        QMessageBox::critical(this, tr("结果帧无法显示"), reason);
+        return false;
+    }
+
+    loadedResultGrid_ = loadResult.grid;
+    loadedResultFields_ = loadResult.fields;
+    loadedResultFrameNumber_ = frameNumber;
+    currentResultScalarOption_.reset();
+    currentResultStatistics_.reset();
+    resultControlWidget_->setResultFields(loadedResultFields_);
+    std::vector<int> frameNumbers;
+    for (const auto& frame : loadedResultSequence_->frames) {
+        frameNumbers.push_back(frame.frameNumber);
+    }
+    resultControlWidget_->setSequenceFrames(frameNumbers, frameNumber);
+
+    bool scalarRestored = false;
+    if (previousScalar) {
+        scalarRestored =
+            resultControlWidget_->selectScalarOption(*previousScalar);
+        if (!scalarRestored) {
+            messageLog_->appendPlainText(
+                tr("帧 %1 不包含先前云图字段，已使用当前帧默认字段。")
+                    .arg(frameNumber));
+        }
+    }
+    resultControlWidget_->setScalarVisible(previousScalarVisible);
+    if (resultControlWidget_->scalarVisible()) {
+        applySelectedResultScalar();
+    } else {
+        vtkPostViewWidget_->clearScalarField();
+    }
+
+    const bool displacementRestored =
+        resultControlWidget_->selectDisplacementField(
+            previousDisplacement);
+    if (!previousDisplacement.empty() && !displacementRestored) {
+        messageLog_->appendPlainText(
+            tr("帧 %1 不包含先前位移字段，已关闭变形显示。")
+                .arg(frameNumber));
+    }
+    updateSelectedDisplacementField();
+    resultControlWidget_->setDeformationScaleValue(previousScale);
+    vtkPostViewWidget_->setDeformationScale(previousScale);
+    resultControlWidget_->setDeformationChecked(
+        previousDeformationVisible && displacementRestored);
+    if (previousDeformationVisible && displacementRestored) {
+        setResultDeformationVisible(true);
+    }
+    resultControlWidget_->setLegendChecked(previousLegendVisible);
+    vtkPostViewWidget_->setLegendVisible(previousLegendVisible);
+    setPostDisplayMode(previousDisplayMode);
+
+    if (QStandardItem* frameItem =
+            resultSequenceFrameItems_.value(frameNumber, nullptr)) {
+        projectTree_->setCurrentIndex(frameItem->index());
+    }
+    setWindowTitle(
+        tr("QTCAE 仿真工作台 - 后处理 - %1 - 帧 %2")
+            .arg(QFileInfo(loadedResultFilePath_).fileName())
+            .arg(frameNumber));
+    statusBar()->showMessage(
+        tr("已切换到结果帧 %1").arg(frameNumber), 3000);
+    messageLog_->appendPlainText(
+        tr("已按需加载 VTK 结果帧 %1：节点 %2，单元 %3。")
+            .arg(frameNumber)
+            .arg(loadedResultGrid_->GetNumberOfPoints())
+            .arg(loadedResultGrid_->GetNumberOfCells()));
+    for (const std::string& warning : loadResult.warnings) {
+        messageLog_->appendPlainText(
+            tr("VTK 帧警告：%1").arg(fromUtf8(warning)));
+    }
+    return true;
+}
+
+void WorkbenchMainWindow::clearLoadedVtkResult(bool clearView) {
+    loadedResultFilePath_.clear();
+    loadedResultGrid_ = nullptr;
+    loadedResultFields_.clear();
+    loadedResultSequence_.reset();
+    loadedResultFrameNumber_ = -1;
+    resultSequenceFrameItems_.clear();
+    currentResultScalarOption_.reset();
+    currentResultStatistics_.reset();
+    loadedResultItem_ = nullptr;
+    loadedResultGridItem_ = nullptr;
+    pointResultsRootItem_ = nullptr;
+    cellResultsRootItem_ = nullptr;
+    resultControlWidget_->clearResult();
+    resultControlWidget_->clearSequence();
+    if (clearView) {
+        vtkPostViewWidget_->clearScene();
+    }
+    if (resultRootItem_ != nullptr) {
+        resultRootItem_->removeRows(0, resultRootItem_->rowCount());
+        currentPostMeshRootItem_ = new QStandardItem(tr("当前网格"));
+        currentPostMeshRootItem_->setEditable(false);
+        resultRootItem_->appendRow(currentPostMeshRootItem_);
+    }
+}
+
+void WorkbenchMainWindow::buildVtkResultTree() {
+    resultRootItem_->removeRows(0, resultRootItem_->rowCount());
+    currentPostMeshRootItem_ = nullptr;
+    currentPostMeshItem_ = nullptr;
+
+    loadedResultItem_ =
+        new QStandardItem(QFileInfo(loadedResultFilePath_).fileName());
+    loadedResultItem_->setEditable(false);
+    loadedResultItem_->setData(
+        static_cast<int>(ResultTreeNodeKind::File),
+        ResultNodeKindRole);
+
+    loadedResultGridItem_ = new QStandardItem(tr("网格"));
+    loadedResultGridItem_->setEditable(false);
+    loadedResultGridItem_->setData(
+        static_cast<int>(ResultTreeNodeKind::Grid),
+        ResultNodeKindRole);
+    loadedResultItem_->appendRow(loadedResultGridItem_);
+
+    pointResultsRootItem_ = new QStandardItem(tr("节点结果"));
+    pointResultsRootItem_->setEditable(false);
+    cellResultsRootItem_ = new QStandardItem(tr("单元结果"));
+    cellResultsRootItem_->setEditable(false);
+    loadedResultItem_->appendRow(pointResultsRootItem_);
+    loadedResultItem_->appendRow(cellResultsRootItem_);
+
+    for (int index = 0;
+         index < static_cast<int>(loadedResultFields_.size());
+         ++index) {
+        const ResultFieldInfo& field =
+            loadedResultFields_[static_cast<std::size_t>(index)];
+        addVtkFieldTreeItem(
+            field, index,
+            field.association == ResultFieldAssociation::Point
+                ? pointResultsRootItem_
+                : cellResultsRootItem_);
+    }
+    resultRootItem_->appendRow(loadedResultItem_);
+    projectTree_->expand(resultRootItem_->index());
+    projectTree_->expand(loadedResultItem_->index());
+    projectTree_->expand(pointResultsRootItem_->index());
+    projectTree_->expand(cellResultsRootItem_->index());
+    projectTree_->setCurrentIndex(loadedResultItem_->index());
+}
+
+void WorkbenchMainWindow::buildVtkResultSequenceTree() {
+    if (!loadedResultSequence_) {
+        return;
+    }
+    resultRootItem_->removeRows(0, resultRootItem_->rowCount());
+    currentPostMeshRootItem_ = nullptr;
+    currentPostMeshItem_ = nullptr;
+    resultSequenceFrameItems_.clear();
+
+    const QString directoryName =
+        QFileInfo(loadedResultFilePath_).fileName().isEmpty()
+        ? loadedResultFilePath_
+        : QFileInfo(loadedResultFilePath_).fileName();
+    loadedResultItem_ = new QStandardItem(directoryName);
+    loadedResultItem_->setEditable(false);
+    loadedResultItem_->setData(
+        static_cast<int>(ResultTreeNodeKind::Sequence),
+        ResultNodeKindRole);
+    resultRootItem_->appendRow(loadedResultItem_);
+
+    for (const auto& frame : loadedResultSequence_->frames) {
+        auto* frameItem =
+            new QStandardItem(tr("帧 %1").arg(frame.frameNumber));
+        frameItem->setEditable(false);
+        frameItem->setData(
+            static_cast<int>(ResultTreeNodeKind::SequenceFrame),
+            ResultNodeKindRole);
+        frameItem->setData(frame.frameNumber, ResultFrameNumberRole);
+        for (const auto& part : frame.parts) {
+            auto* partItem =
+                new QStandardItem(fromUtf8(part.name));
+            partItem->setEditable(false);
+            partItem->setData(
+                static_cast<int>(ResultTreeNodeKind::SequencePart),
+                ResultNodeKindRole);
+            partItem->setData(frame.frameNumber,
+                              ResultFrameNumberRole);
+            partItem->setData(
+                QString::fromStdWString(part.filePath.wstring()),
+                ResultPartPathRole);
+            frameItem->appendRow(partItem);
+        }
+        loadedResultItem_->appendRow(frameItem);
+        resultSequenceFrameItems_.insert(
+            frame.frameNumber, frameItem);
+    }
+    projectTree_->expand(resultRootItem_->index());
+    projectTree_->expand(loadedResultItem_->index());
+    if (QStandardItem* current = resultSequenceFrameItems_.value(
+            loadedResultFrameNumber_, nullptr)) {
+        projectTree_->expand(current->index());
+        projectTree_->setCurrentIndex(current->index());
+    }
+}
+
+void WorkbenchMainWindow::showVtkResultSequenceProperties() {
+    if (!loadedResultSequence_) {
+        showDefaultProperties();
+        return;
+    }
+    const auto currentFrame = std::find_if(
+        loadedResultSequence_->frames.begin(),
+        loadedResultSequence_->frames.end(),
+        [this](const VtkResultSequenceFrame& frame) {
+            return frame.frameNumber == loadedResultFrameNumber_;
+        });
+    const std::size_t currentPartCount =
+        currentFrame == loadedResultSequence_->frames.end()
+        ? 0
+        : currentFrame->parts.size();
+    setPropertyRows({
+        {tr("名称"), QFileInfo(loadedResultFilePath_).fileName()},
+        {tr("类型"), tr("VTK 结果序列")},
+        {tr("结果目录"), loadedResultFilePath_},
+        {tr("帧数"),
+         QString::number(loadedResultSequence_->frames.size())},
+        {tr("当前帧"), QString::number(loadedResultFrameNumber_)},
+        {tr("当前对象数"), QString::number(currentPartCount)},
+        {tr("节点数"),
+         loadedResultGrid_ == nullptr
+             ? QStringLiteral("0")
+             : QString::number(
+                   loadedResultGrid_->GetNumberOfPoints())},
+        {tr("单元数"),
+         loadedResultGrid_ == nullptr
+             ? QStringLiteral("0")
+             : QString::number(
+                   loadedResultGrid_->GetNumberOfCells())},
+        {tr("加载方式"), tr("按需加载当前帧")}
+    });
+}
+
+void WorkbenchMainWindow::showVtkResultSequenceFrameProperties(
+    int frameNumber) {
+    if (!loadedResultSequence_) {
+        showDefaultProperties();
+        return;
+    }
+    const auto iterator = std::find_if(
+        loadedResultSequence_->frames.begin(),
+        loadedResultSequence_->frames.end(),
+        [frameNumber](const VtkResultSequenceFrame& frame) {
+            return frame.frameNumber == frameNumber;
+        });
+    if (iterator == loadedResultSequence_->frames.end()) {
+        showDefaultProperties();
+        return;
+    }
+    QVector<QPair<QString, QString>> rows{
+        {tr("名称"), tr("帧 %1").arg(frameNumber)},
+        {tr("类型"), tr("VTK 结果序列帧")},
+        {tr("对象文件数"), QString::number(iterator->parts.size())},
+        {tr("当前已加载"),
+         frameNumber == loadedResultFrameNumber_ ? tr("是") : tr("否")}
+    };
+    if (frameNumber == loadedResultFrameNumber_ &&
+        loadedResultGrid_ != nullptr) {
+        rows.push_back(
+            {tr("节点数"),
+             QString::number(loadedResultGrid_->GetNumberOfPoints())});
+        rows.push_back(
+            {tr("单元数"),
+             QString::number(loadedResultGrid_->GetNumberOfCells())});
+        rows.push_back(
+            {tr("公共结果字段"),
+             QString::number(loadedResultFields_.size())});
+    }
+    setPropertyRows(rows);
+}
+
+void WorkbenchMainWindow::showVtkResultSequencePartProperties(
+    int frameNumber, const QString& filePath) {
+    setPropertyRows({
+        {tr("名称"), QFileInfo(filePath).fileName()},
+        {tr("类型"), tr("VTK 结果序列对象")},
+        {tr("帧编号"), QString::number(frameNumber)},
+        {tr("对象"), QFileInfo(filePath).baseName().contains(
+                         QStringLiteral("bolt"),
+                         Qt::CaseInsensitive)
+                     ? QStringLiteral("bolt")
+                     : QStringLiteral("solid")},
+        {tr("路径"), filePath},
+        {tr("加载状态"),
+         frameNumber == loadedResultFrameNumber_
+             ? tr("随当前帧加载")
+             : tr("未加载")}
+    });
+}
+
+void WorkbenchMainWindow::addVtkFieldTreeItem(
+    const ResultFieldInfo& field, int fieldIndex,
+    QStandardItem* parent) {
+    if (parent == nullptr) {
+        return;
+    }
+    const ResultFieldProcessor processor;
+    const auto options = processor.scalarOptions(field);
+    auto* fieldItem = new QStandardItem(fromUtf8(field.name));
+    fieldItem->setEditable(false);
+    fieldItem->setData(
+        static_cast<int>(ResultTreeNodeKind::Field),
+        ResultNodeKindRole);
+    fieldItem->setData(fieldIndex, ResultFieldIndexRole);
+    fieldItem->setData(fromUtf8(field.name), ResultFieldNameRole);
+    fieldItem->setData(static_cast<int>(field.association),
+                       ResultAssociationRole);
+
+    const auto setOptionData =
+        [fieldIndex](QStandardItem* item,
+                     const ResultScalarOption& option,
+                     int optionIndex) {
+            item->setData(fieldIndex, ResultFieldIndexRole);
+            item->setData(optionIndex, ResultOptionIndexRole);
+            item->setData(fromUtf8(option.sourceArrayName),
+                          ResultFieldNameRole);
+            item->setData(static_cast<int>(option.association),
+                          ResultAssociationRole);
+            item->setData(static_cast<int>(option.operation),
+                          ResultOperationRole);
+            item->setData(option.component, ResultComponentRole);
+        };
+
+    if (!options.empty()) {
+        int defaultOption = 0;
+        if (field.componentCount == 3 || field.stressTensor) {
+            defaultOption = static_cast<int>(options.size()) - 1;
+        }
+        setOptionData(
+            fieldItem,
+            options[static_cast<std::size_t>(defaultOption)],
+            defaultOption);
+    }
+    if (options.size() > 1) {
+        for (int index = 0; index < static_cast<int>(options.size());
+             ++index) {
+            const ResultScalarOption& option =
+                options[static_cast<std::size_t>(index)];
+            auto* optionItem =
+                new QStandardItem(fromUtf8(option.displayName));
+            optionItem->setEditable(false);
+            optionItem->setData(
+                static_cast<int>(ResultTreeNodeKind::ScalarOption),
+                ResultNodeKindRole);
+            setOptionData(optionItem, option, index);
+            fieldItem->appendRow(optionItem);
+        }
+    }
+    parent->appendRow(fieldItem);
+}
+
+void WorkbenchMainWindow::applySelectedResultScalar() {
+    const auto option = resultControlWidget_->selectedScalarOption();
+    if (!option) {
+        vtkPostViewWidget_->clearScalarField();
+        currentResultScalarOption_.reset();
+        currentResultStatistics_.reset();
+        showLoadedResultProperties();
+        return;
+    }
+    showResultScalar(*option);
+}
+
+bool WorkbenchMainWindow::showResultScalar(
+    const ResultScalarOption& option) {
+    if (loadedResultGrid_ == nullptr) {
+        return false;
+    }
+    const ResultFieldProcessor processor;
+    const ResultScalarBuildResult build =
+        processor.buildScalar(loadedResultGrid_, option);
+    if (!build.success) {
+        const QString reason = build.errorMessage.empty()
+            ? tr("未知错误")
+            : fromUtf8(build.errorMessage);
+        statusBar()->showMessage(tr("结果云图显示失败"), 5000);
+        messageLog_->appendPlainText(
+            tr("结果云图显示失败：%1").arg(reason));
+        return false;
+    }
+    const std::string displayName =
+        option.displayName == option.sourceArrayName
+        ? option.sourceArrayName
+        : option.sourceArrayName + "." + option.displayName;
+    if (!vtkPostViewWidget_->showScalarField(
+            build.arrayName, option.association, 0, displayName)) {
+        const QString reason = vtkPostViewWidget_->lastError();
+        statusBar()->showMessage(tr("结果云图显示失败"), 5000);
+        messageLog_->appendPlainText(
+            tr("结果云图显示失败：%1").arg(reason));
+        return false;
+    }
+    currentResultScalarOption_ = option;
+    currentResultStatistics_ = build.statistics;
+    for (const std::string& warning : build.warnings) {
+        messageLog_->appendPlainText(
+            tr("结果字段警告：%1").arg(fromUtf8(warning)));
+    }
+    showCurrentResultScalarProperties();
+    statusBar()->showMessage(
+        tr("当前结果：%1").arg(fromUtf8(displayName)), 3000);
+    return true;
+}
+
+void WorkbenchMainWindow::updateSelectedDisplacementField() {
+    if (loadedResultGrid_ == nullptr) {
+        return;
+    }
+    const std::string name =
+        resultControlWidget_->selectedDisplacementField();
+    if (name.empty()) {
+        vtkPostViewWidget_->clearDisplacementField();
+        resultControlWidget_->setDeformationChecked(false);
+        showCurrentResultScalarProperties();
+        return;
+    }
+    const ResultFieldProcessor processor;
+    const ResultValidationResult validation =
+        processor.validateDisplacementField(loadedResultGrid_, name);
+    if (!validation.success ||
+        !vtkPostViewWidget_->setDisplacementField(name)) {
+        const QString reason = !validation.success
+            ? fromUtf8(validation.errorMessage)
+            : vtkPostViewWidget_->lastError();
+        resultControlWidget_->setDeformationChecked(false);
+        messageLog_->appendPlainText(
+            tr("位移字段不可用：%1").arg(reason));
+        statusBar()->showMessage(tr("位移字段不可用"), 5000);
+        return;
+    }
+    if (resultControlWidget_->deformationVisible()) {
+        setResultDeformationVisible(true);
+    }
+    showCurrentResultScalarProperties();
+}
+
+void WorkbenchMainWindow::setResultDeformationVisible(bool visible) {
+    if (loadedResultGrid_ == nullptr) {
+        return;
+    }
+    if (!vtkPostViewWidget_->setDeformationEnabled(visible)) {
+        resultControlWidget_->setDeformationChecked(false);
+        messageLog_->appendPlainText(
+            tr("位移变形显示失败：%1")
+                .arg(vtkPostViewWidget_->lastError()));
+        statusBar()->showMessage(tr("位移变形显示失败"), 5000);
+        return;
+    }
+    showCurrentResultScalarProperties();
+    statusBar()->showMessage(
+        visible ? tr("已显示位移变形")
+                : tr("已关闭位移变形"),
+        3000);
+}
+
+void WorkbenchMainWindow::setResultDeformationScale(double scale) {
+    if (loadedResultGrid_ == nullptr) {
+        return;
+    }
+    const ResultFieldProcessor processor;
+    const ResultValidationResult validation =
+        processor.validateDeformationScale(scale);
+    if (!validation.success ||
+        !vtkPostViewWidget_->setDeformationScale(scale)) {
+        const QString reason = !validation.success
+            ? fromUtf8(validation.errorMessage)
+            : vtkPostViewWidget_->lastError();
+        messageLog_->appendPlainText(
+            tr("变形倍率更新失败：%1").arg(reason));
+        statusBar()->showMessage(tr("变形倍率更新失败"), 5000);
+        return;
+    }
+    showCurrentResultScalarProperties();
+    statusBar()->showMessage(
+        tr("变形倍率：%1").arg(scale, 0, 'g', 10), 3000);
+}
+
+void WorkbenchMainWindow::showLoadedResultProperties() {
+    if (loadedResultSequence_) {
+        showVtkResultSequenceFrameProperties(
+            loadedResultFrameNumber_);
+        return;
+    }
+    if (loadedResultGrid_ == nullptr) {
+        showDefaultProperties();
+        return;
+    }
+    const qlonglong pointFields = static_cast<qlonglong>(
+        std::count_if(
+        loadedResultFields_.begin(), loadedResultFields_.end(),
+        [](const ResultFieldInfo& field) {
+            return field.association == ResultFieldAssociation::Point;
+        }));
+    const qlonglong cellFields =
+        static_cast<qlonglong>(loadedResultFields_.size()) -
+        pointFields;
+    setPropertyRows({
+        {tr("名称"), QFileInfo(loadedResultFilePath_).fileName()},
+        {tr("类型"),
+         QFileInfo(loadedResultFilePath_).suffix().compare(
+             QStringLiteral("vtk"), Qt::CaseInsensitive) == 0
+             ? tr("VTK Legacy 非结构网格结果")
+             : tr("VTK XML 非结构网格结果")},
+        {tr("路径"), loadedResultFilePath_},
+        {tr("节点数"),
+         QString::number(loadedResultGrid_->GetNumberOfPoints())},
+        {tr("单元数"),
+         QString::number(loadedResultGrid_->GetNumberOfCells())},
+        {tr("节点结果字段"), QString::number(pointFields)},
+        {tr("单元结果字段"), QString::number(cellFields)}
+    });
+}
+
+void WorkbenchMainWindow::showResultGridProperties() {
+    if (loadedResultGrid_ == nullptr) {
+        showDefaultProperties();
+        return;
+    }
+    setPropertyRows({
+        {tr("名称"), tr("网格")},
+        {tr("类型"), tr("VTK 非结构网格")},
+        {tr("节点数"),
+         QString::number(loadedResultGrid_->GetNumberOfPoints())},
+        {tr("单元数"),
+         QString::number(loadedResultGrid_->GetNumberOfCells())},
+        {tr("显示模式"), postDisplayModeName()}
+    });
+}
+
+void WorkbenchMainWindow::showResultFieldProperties(int fieldIndex) {
+    if (fieldIndex < 0 ||
+        fieldIndex >= static_cast<int>(loadedResultFields_.size())) {
+        showLoadedResultProperties();
+        return;
+    }
+    const ResultFieldInfo& field =
+        loadedResultFields_[static_cast<std::size_t>(fieldIndex)];
+    setPropertyRows({
+        {tr("名称"), fromUtf8(field.name)},
+        {tr("关联位置"), resultAssociationName(field.association)},
+        {tr("分量数量"), QString::number(field.componentCount)},
+        {tr("元组数量"), QString::number(field.tupleCount)},
+        {tr("应力张量"), field.stressTensor ? tr("是") : tr("否")}
+    });
+}
+
+void WorkbenchMainWindow::showCurrentResultScalarProperties() {
+    if (loadedResultGrid_ == nullptr) {
+        showDefaultProperties();
+        return;
+    }
+    if (!currentResultScalarOption_ || !currentResultStatistics_) {
+        showLoadedResultProperties();
+        return;
+    }
+    const ResultScalarOption& option = *currentResultScalarOption_;
+    const ResultScalarStatistics& statistics = *currentResultStatistics_;
+    const QString displayName =
+        option.displayName == option.sourceArrayName
+        ? fromUtf8(option.sourceArrayName)
+        : tr("%1.%2").arg(fromUtf8(option.sourceArrayName),
+                          fromUtf8(option.displayName));
+    QVector<QPair<QString, QString>> rows{
+        {tr("结果名称"), displayName},
+        {tr("关联位置"), resultAssociationName(option.association)},
+        {tr("最小值"),
+         QString::number(statistics.minimum, 'g', 12)},
+        {tr("最大值"),
+         QString::number(statistics.maximum, 'g', 12)},
+        {tr("单位"), tr("未提供")},
+        {tr("最小值 ID"),
+         QString::number(statistics.minimumId)},
+        {tr("最大值 ID"),
+         QString::number(statistics.maximumId)},
+        {tr("显示模式"), postDisplayModeName()},
+        {tr("位移变形"),
+         vtkPostViewWidget_->deformationEnabled()
+             ? tr("开启")
+             : tr("关闭")},
+        {tr("变形倍率"),
+         QString::number(vtkPostViewWidget_->deformationScale(),
+                         'g', 12)},
+        {tr("图例"),
+         vtkPostViewWidget_->legendVisible()
+             ? tr("显示")
+             : tr("隐藏")}
+    };
+    if (statistics.hasPositions) {
+        rows.append({
+            tr("最小值坐标"),
+            tr("(%1, %2, %3)")
+                .arg(statistics.minimumPosition[0], 0, 'g', 10)
+                .arg(statistics.minimumPosition[1], 0, 'g', 10)
+                .arg(statistics.minimumPosition[2], 0, 'g', 10)});
+        rows.append({
+            tr("最大值坐标"),
+            tr("(%1, %2, %3)")
+                .arg(statistics.maximumPosition[0], 0, 'g', 10)
+                .arg(statistics.maximumPosition[1], 0, 'g', 10)
+                .arg(statistics.maximumPosition[2], 0, 'g', 10)});
+    }
+    if (statistics.ignoredValueCount > 0) {
+        rows.append({
+            tr("忽略无效值"),
+            QString::number(statistics.ignoredValueCount)});
+    }
+    setPropertyRows(rows);
+}
+
+std::optional<ResultScalarOption>
+WorkbenchMainWindow::resultScalarOption(
+    const QStandardItem* item) const {
+    if (item == nullptr) {
+        return std::nullopt;
+    }
+    bool fieldIndexValid = false;
+    bool optionIndexValid = false;
+    const int fieldIndex =
+        item->data(ResultFieldIndexRole).toInt(&fieldIndexValid);
+    const int optionIndex =
+        item->data(ResultOptionIndexRole).toInt(&optionIndexValid);
+    if (!fieldIndexValid || !optionIndexValid) {
+        return std::nullopt;
+    }
+    if (fieldIndex < 0 ||
+        fieldIndex >= static_cast<int>(loadedResultFields_.size())) {
+        return std::nullopt;
+    }
+    const ResultFieldProcessor processor;
+    const auto options = processor.scalarOptions(
+        loadedResultFields_[static_cast<std::size_t>(fieldIndex)]);
+    if (optionIndex < 0 ||
+        optionIndex >= static_cast<int>(options.size())) {
+        return std::nullopt;
+    }
+    return options[static_cast<std::size_t>(optionIndex)];
+}
+
 void WorkbenchMainWindow::displayMeshInPostprocessing(int meshId) {
     const int requestedMeshId = meshId >= 0 ? meshId
                                             : selectedMeshObjectId_;
@@ -1670,6 +2698,7 @@ void WorkbenchMainWindow::displayMeshInPostprocessing(int meshId) {
         return;
     }
 
+    clearLoadedVtkResult(false);
     currentPostMeshId_ = requestedMeshId;
     if (currentPostMeshItem_ != nullptr &&
         currentPostMeshItem_->parent() != nullptr) {
@@ -1751,7 +2780,11 @@ void WorkbenchMainWindow::setPostDisplayMode(
         vtkPostViewWidget_->setWireframe();
         break;
     }
-    showPostprocessingMeshProperties(currentPostMeshId_);
+    if (loadedResultGrid_ != nullptr) {
+        showCurrentResultScalarProperties();
+    } else {
+        showPostprocessingMeshProperties(currentPostMeshId_);
+    }
     statusBar()->showMessage(
         tr("后处理显示模式：%1").arg(postDisplayModeName()), 3000);
 }
@@ -3641,7 +4674,9 @@ void WorkbenchMainWindow::updateWorkspaceProperty(const QString& workspaceName) 
     Q_UNUSED(workspaceName)
     if (workspaceStack_ != nullptr &&
         workspaceStack_->currentIndex() == 1) {
-        if (currentPostMeshId_ >= 0) {
+        if (loadedResultGrid_ != nullptr) {
+            showCurrentResultScalarProperties();
+        } else if (currentPostMeshId_ >= 0) {
             showPostprocessingMeshProperties(currentPostMeshId_);
         } else {
             showDefaultProperties();

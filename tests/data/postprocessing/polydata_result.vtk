@@ -1,0 +1,10 @@
+# vtk DataFile Version 3.0
+QTCAE unsupported polydata test
+ASCII
+DATASET POLYDATA
+POINTS 3 double
+0 0 0
+1 0 0
+0 1 0
+POLYGONS 1 4
+3 0 1 2

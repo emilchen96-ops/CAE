@@ -16,5 +16,7 @@
 *.sta
 *.res
 *.vtk
+!tests/data/postprocessing/*.vtk
 *.vtu
+!tests/data/postprocessing/*.vtu
 *.msh

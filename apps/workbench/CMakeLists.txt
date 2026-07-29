@@ -10,6 +10,11 @@ find_package(OpenCASCADE REQUIRED COMPONENTS
 set(QTCAE_VTK_MODULES
     CommonCore
     CommonDataModel
+    CommonMisc
+    FiltersCore
+    FiltersGeneral
+    IOLegacy
+    IOXML
     RenderingAnnotation
     RenderingCore
     RenderingOpenGL2
@@ -54,6 +59,11 @@ add_executable(QTCAE_Workbench WIN32
     MaterialEditorDialog.hpp
     MeshDataToVtkConverter.cpp
     MeshDataToVtkConverter.hpp
+    ResultControlWidget.cpp
+    ResultControlWidget.hpp
+    ResultField.hpp
+    ResultFieldProcessor.cpp
+    ResultFieldProcessor.hpp
     NamedSelectionResolver.cpp
     NamedSelectionResolver.hpp
     SectionAssignmentDialog.cpp
@@ -70,6 +80,13 @@ add_executable(QTCAE_Workbench WIN32
     WorkbenchMainWindow.hpp
     VtkPostViewWidget.cpp
     VtkPostViewWidget.hpp
+    VtkResultReader.cpp
+    VtkResultReader.hpp
+    VtkResultSequence.hpp
+    VtkResultSequenceLoader.cpp
+    VtkResultSequenceLoader.hpp
+    VtkResultSequenceScanner.cpp
+    VtkResultSequenceScanner.hpp
 )
 
 set_target_properties(QTCAE_Workbench PROPERTIES

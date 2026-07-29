@@ -6,11 +6,16 @@
 #include <QString>
 #include <QVector>
 
+#include <vtkSmartPointer.h>
+
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "GeometrySelection.hpp"
 #include "NamedSelectionResolver.hpp"
+#include "ResultField.hpp"
+#include "VtkResultSequence.hpp"
 #include "emilcae/core/DisplacementConstraintManager.hpp"
 #include "emilcae/core/MaterialManager.hpp"
 #include "emilcae/core/NamedSelectionManager.hpp"
@@ -29,7 +34,9 @@ class QPoint;
 class QStandardItem;
 class QTreeView;
 class OccViewWidget;
+class ResultControlWidget;
 class VtkPostViewWidget;
+class vtkUnstructuredGrid;
 enum class VtkMeshDisplayMode;
 
 class WorkbenchMainWindow final : public QMainWindow {
@@ -37,6 +44,7 @@ class WorkbenchMainWindow final : public QMainWindow {
 
 public:
     explicit WorkbenchMainWindow(QWidget* parent = nullptr);
+    ~WorkbenchMainWindow() override;
 
 private:
     void createActions();
@@ -61,12 +69,37 @@ private:
     void clearSelectedMesh();
     void importHmAsciiMesh();
     void exportHmAsciiMesh();
+    void importVtkResult();
+    void importVtkResultSequence();
+    bool loadVtkResultSequenceFrame(int frameNumber,
+                                    bool firstLoad = false);
     void displayMeshInPostprocessing(int meshId = -1);
     void clearPostprocessingMeshIfMatches(int meshId);
     void showPostprocessingMeshProperties(int meshId);
     void setPostDisplayMode(VtkMeshDisplayMode mode);
     QString postDisplayModeName() const;
     void updatePostViewActionStates();
+    void clearLoadedVtkResult(bool clearView);
+    void buildVtkResultTree();
+    void buildVtkResultSequenceTree();
+    void showVtkResultSequenceProperties();
+    void showVtkResultSequenceFrameProperties(int frameNumber);
+    void showVtkResultSequencePartProperties(
+        int frameNumber, const QString& filePath);
+    void addVtkFieldTreeItem(const ResultFieldInfo& field,
+                             int fieldIndex,
+                             QStandardItem* parent);
+    void applySelectedResultScalar();
+    bool showResultScalar(const ResultScalarOption& option);
+    void updateSelectedDisplacementField();
+    void setResultDeformationVisible(bool visible);
+    void setResultDeformationScale(double scale);
+    void showLoadedResultProperties();
+    void showResultGridProperties();
+    void showResultFieldProperties(int fieldIndex);
+    void showCurrentResultScalarProperties();
+    std::optional<ResultScalarOption> resultScalarOption(
+        const QStandardItem* item) const;
     void addOrUpdateMeshTreeItem(int meshId, int geometryObjectId);
     void addStandaloneMeshTreeItem(int meshId, const QString& name);
     void setMeshVisible(QStandardItem* item, bool visible);
@@ -192,6 +225,8 @@ private:
     QAction* clearMeshAction_{nullptr};
     QAction* importHmAsciiAction_{nullptr};
     QAction* exportHmAsciiAction_{nullptr};
+    QAction* importVtkResultAction_{nullptr};
+    QAction* importVtkResultSequenceAction_{nullptr};
     QAction* surfaceWithEdgesAction_{nullptr};
     QAction* surfaceOnlyAction_{nullptr};
     QAction* wireframeAction_{nullptr};
@@ -232,6 +267,7 @@ private:
     QDockWidget* propertiesDock_{nullptr};
     QDockWidget* messageLogDock_{nullptr};
     QDockWidget* taskMonitorDock_{nullptr};
+    QDockWidget* resultControlDock_{nullptr};
     QStackedWidget* workspaceStack_{nullptr};
     QStandardItemModel* propertiesModel_{nullptr};
     QStandardItemModel* projectModel_{nullptr};
@@ -245,10 +281,16 @@ private:
     QStandardItem* resultRootItem_{nullptr};
     QStandardItem* currentPostMeshRootItem_{nullptr};
     QStandardItem* currentPostMeshItem_{nullptr};
+    QStandardItem* loadedResultItem_{nullptr};
+    QStandardItem* loadedResultGridItem_{nullptr};
+    QStandardItem* pointResultsRootItem_{nullptr};
+    QStandardItem* cellResultsRootItem_{nullptr};
+    QHash<int, QStandardItem*> resultSequenceFrameItems_;
     QTreeView* projectTree_{nullptr};
     QPlainTextEdit* messageLog_{nullptr};
     OccViewWidget* occViewWidget_{nullptr};
     VtkPostViewWidget* vtkPostViewWidget_{nullptr};
+    ResultControlWidget* resultControlWidget_{nullptr};
     QHash<int, QStandardItem*> geometryItems_;
     QHash<int, QStandardItem*> meshItems_;
     QHash<int, QStandardItem*> materialItems_;
@@ -272,5 +314,12 @@ private:
     int selectedNamedSelectionId_{-1};
     int selectedConstraintId_{-1};
     int currentPostMeshId_{-1};
+    QString loadedResultFilePath_;
+    vtkSmartPointer<vtkUnstructuredGrid> loadedResultGrid_;
+    std::vector<ResultFieldInfo> loadedResultFields_;
+    std::optional<VtkResultSequence> loadedResultSequence_;
+    int loadedResultFrameNumber_{-1};
+    std::optional<ResultScalarOption> currentResultScalarOption_;
+    std::optional<ResultScalarStatistics> currentResultStatistics_;
     bool syncingTreeSelection_{false};
 };

@@ -1,0 +1,54 @@
+<?xml version="1.0"?>
+<VTKFile type="UnstructuredGrid" version="0.1" byte_order="LittleEndian">
+  <UnstructuredGrid>
+    <Piece NumberOfPoints="4" NumberOfCells="1">
+      <PointData Scalars="Temperature" Vectors="Displacement" GlobalIds="GlobalNodeIds">
+        <DataArray type="Float64" Name="Temperature" format="ascii">
+          10 20 30 40
+        </DataArray>
+        <DataArray type="Float64" Name="Displacement" NumberOfComponents="3"
+                   ComponentName0="Ux" ComponentName1="Uy" ComponentName2="Uz"
+                   format="ascii">
+          0 0 0
+          1 0 0
+          0 2 0
+          0 0 3
+        </DataArray>
+        <DataArray type="Int64" Name="GlobalNodeIds" format="ascii">
+          10 20 30 40
+        </DataArray>
+      </PointData>
+      <CellData Scalars="CellEnergy">
+        <DataArray type="Float64" Name="CellEnergy" format="ascii">
+          42
+        </DataArray>
+        <DataArray type="Float64" Name="Stress" NumberOfComponents="6"
+                   ComponentName0="Sxx" ComponentName1="Syy"
+                   ComponentName2="Szz" ComponentName3="Sxy"
+                   ComponentName4="Syz" ComponentName5="Szx"
+                   format="ascii">
+          100 50 25 10 5 3
+        </DataArray>
+      </CellData>
+      <Points>
+        <DataArray type="Float64" NumberOfComponents="3" format="ascii">
+          0 0 0
+          1 0 0
+          0 1 0
+          0 0 1
+        </DataArray>
+      </Points>
+      <Cells>
+        <DataArray type="Int64" Name="connectivity" format="ascii">
+          0 1 2 3
+        </DataArray>
+        <DataArray type="Int64" Name="offsets" format="ascii">
+          4
+        </DataArray>
+        <DataArray type="UInt8" Name="types" format="ascii">
+          10
+        </DataArray>
+      </Cells>
+    </Piece>
+  </UnstructuredGrid>
+</VTKFile>
