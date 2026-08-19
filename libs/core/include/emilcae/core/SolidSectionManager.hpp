@@ -3,13 +3,18 @@
 #include "emilcae/core/MaterialManager.hpp"
 #include "emilcae/core/SolidSection.hpp"
 
+#include <functional>
 #include <vector>
 
 namespace emilcae::core {
 
 class SolidSectionManager {
 public:
-    explicit SolidSectionManager(const MaterialManager& materialManager);
+    using ReferenceChecker = std::function<bool(SolidSectionId)>;
+
+    explicit SolidSectionManager(
+        const MaterialManager& materialManager,
+        ReferenceChecker referenceChecker = {});
 
     SolidSectionOperationResult createSection(const std::string& name,
                                                MaterialId materialId);
@@ -29,6 +34,7 @@ private:
                                SolidSectionId excludedSectionId = -1) const;
 
     const MaterialManager& materialManager_;
+    ReferenceChecker referenceChecker_;
     std::vector<SolidSection> sections_;
     SolidSectionId nextId_{1};
 };

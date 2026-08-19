@@ -183,6 +183,18 @@ int main() {
     expect(!processor.validateDeformationScale(
                 std::numeric_limits<double>::infinity()).success,
            "无穷倍率应拒绝");
+    expect(processor.validateScalarRange(-10.0, 25.0).success,
+           "有限且递增的手动云图范围应有效");
+    expect(!processor.validateScalarRange(5.0, 5.0).success,
+           "相等的云图范围上下限应拒绝");
+    expect(!processor.validateScalarRange(10.0, -10.0).success,
+           "逆序的云图范围上下限应拒绝");
+    expect(!processor.validateScalarRange(
+                std::numeric_limits<double>::quiet_NaN(), 1.0).success,
+           "包含 NaN 的云图范围应拒绝");
+    expect(!processor.validateScalarRange(
+                0.0, std::numeric_limits<double>::infinity()).success,
+           "包含无穷值的云图范围应拒绝");
 
     double originalPoint[3]{};
     readResult.grid->GetPoint(1, originalPoint);

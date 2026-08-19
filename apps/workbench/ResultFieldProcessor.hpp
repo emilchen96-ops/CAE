@@ -36,6 +36,8 @@ public:
         const std::string& arrayName) const;
 
     ResultValidationResult validateDeformationScale(double scale) const;
+    ResultValidationResult validateScalarRange(
+        double minimum, double maximum) const;
 
 private:
     vtkDataArray* findArray(

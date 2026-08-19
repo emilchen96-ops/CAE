@@ -134,7 +134,9 @@ VtkResultSequenceLoadResult VtkResultSequenceLoader::load(
         append->MergePointsOff();
         std::vector<vtkSmartPointer<vtkUnstructuredGrid>> cleanGrids;
         cleanGrids.reserve(reads.size());
-        for (const VtkReadResult& read : reads) {
+        vtkIdType firstCell = 0;
+        for (std::size_t index = 0; index < reads.size(); ++index) {
+            const VtkReadResult& read = reads[index];
             auto clean = vtkSmartPointer<vtkUnstructuredGrid>::New();
             clean->DeepCopy(read.grid);
             retainArrays(clean->GetPointData(),
@@ -142,6 +144,14 @@ VtkResultSequenceLoadResult VtkResultSequenceLoader::load(
             retainArrays(clean->GetCellData(),
                          ResultFieldAssociation::Cell, commonFields);
             append->AddInputData(clean);
+            const vtkIdType cellCount = clean->GetNumberOfCells();
+            result.parts.push_back({
+                frame.parts[index].id,
+                frame.parts[index].name,
+                firstCell,
+                cellCount
+            });
+            firstCell += cellCount;
             cleanGrids.push_back(std::move(clean));
         }
         append->Update();
@@ -149,7 +159,7 @@ VtkResultSequenceLoadResult VtkResultSequenceLoader::load(
         if (output == nullptr || output->GetNumberOfPoints() <= 0 ||
             output->GetNumberOfCells() <= 0) {
             result.errorMessage =
-                "当前帧的 solid/bolt 合并后没有有效网格。";
+                "当前帧的结果对象合并后没有有效网格。";
             return result;
         }
         result.grid = vtkSmartPointer<vtkUnstructuredGrid>::New();

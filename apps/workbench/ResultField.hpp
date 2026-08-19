@@ -14,6 +14,10 @@ enum class ResultScalarOperation {
     Magnitude,
     VonMises
 };
+enum class ResultScalarRangeMode {
+    Automatic,
+    Manual
+};
 
 struct ResultFieldInfo {
     std::string name;

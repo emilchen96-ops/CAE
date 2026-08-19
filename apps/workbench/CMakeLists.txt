@@ -18,6 +18,7 @@ set(QTCAE_VTK_MODULES
     FiltersCore
     FiltersGeneral
     IOLegacy
+    IOImage
     IOXML
     RenderingAnnotation
     RenderingCore
@@ -59,19 +60,37 @@ add_executable(QTCAE_Workbench WIN32
     GmshMesher.hpp
     HmAsciiMeshIo.cpp
     HmAsciiMeshIo.hpp
+    HistoryCurveWidget.cpp
+    HistoryCurveWidget.hpp
     MaterialEditorDialog.cpp
     MaterialEditorDialog.hpp
     MeshDataToVtkConverter.cpp
     MeshDataToVtkConverter.hpp
+    PostFilterDialogs.cpp
+    PostFilterDialogs.hpp
     ResultControlWidget.cpp
     ResultControlWidget.hpp
     ResultField.hpp
     ResultFieldProcessor.cpp
     ResultFieldProcessor.hpp
+    ResultHistory.hpp
+    ResultHistoryExtractor.cpp
+    ResultHistoryExtractor.hpp
     NamedSelectionResolver.cpp
     NamedSelectionResolver.hpp
     SectionAssignmentDialog.cpp
     SectionAssignmentDialog.hpp
+    SphAnalysisDialog.cpp
+    SphAnalysisDialog.hpp
+    SphExistingJobDialog.cpp
+    SphExistingJobDialog.hpp
+    SphJobDefinition.hpp
+    SphJobWriter.cpp
+    SphJobWriter.hpp
+    SphMultiBodyAnalysisDialog.cpp
+    SphMultiBodyAnalysisDialog.hpp
+    SphSolverProcess.cpp
+    SphSolverProcess.hpp
     SolidSectionEditorDialog.cpp
     SolidSectionEditorDialog.hpp
     GeometryObjectManager.cpp

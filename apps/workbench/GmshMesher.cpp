@@ -200,8 +200,11 @@ MeshResult GmshMesher::generateTetrahedralMesh(
     }
     const QString temporaryPath = temporaryFile.fileName();
     temporaryFile.close();
+    // 与 GeometryImporter 保持一致：OCCT 7.4+ 与 Gmsh 均按 UTF-8 解释
+    // 窄字符串路径。QFile::encodeName（ANSI 代码页）在非 ASCII 临时目录
+    // （如中文用户名）下会与 Gmsh 读回的 UTF-8 路径不一致，导致网格生成失败。
     const QByteArray encodedPath =
-        QFile::encodeName(QDir::toNativeSeparators(temporaryPath));
+        QDir::toNativeSeparators(temporaryPath).toUtf8();
 
     try {
         if (!BRepTools::Write(shape, encodedPath.constData())) {

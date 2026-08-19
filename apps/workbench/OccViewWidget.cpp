@@ -339,6 +339,13 @@ const MeshObject* OccViewWidget::findMeshForGeometry(
         : nullptr;
 }
 
+const std::vector<MeshObject>& OccViewWidget::meshes() const {
+    static const std::vector<MeshObject> empty;
+    return impl_->objectManager != nullptr
+        ? impl_->objectManager->meshes()
+        : empty;
+}
+
 std::size_t OccViewWidget::geometryObjectCount() const {
     return impl_->objectManager != nullptr
         ? impl_->objectManager->objectCount()

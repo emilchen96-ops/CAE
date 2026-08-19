@@ -26,8 +26,10 @@ bool validLocalIndex(const NamedSelectionItem& item) {
 } // namespace
 
 NamedSelectionManager::NamedSelectionManager(
-    GeometryObjectExists geometryObjectExists)
-    : geometryObjectExists_(std::move(geometryObjectExists)) {}
+    GeometryObjectExists geometryObjectExists,
+    ReferenceChecker referenceChecker)
+    : geometryObjectExists_(std::move(geometryObjectExists)),
+      referenceChecker_(std::move(referenceChecker)) {}
 
 NamedSelectionOperationResult NamedSelectionManager::create(
     const std::string& name, NamedSelectionEntityType entityType,
@@ -100,6 +102,9 @@ NamedSelectionOperationResult NamedSelectionManager::remove(
         [id](const NamedSelection& selection) { return selection.id == id; });
     if (iterator == namedSelections_.end()) {
         return {.error = NamedSelectionError::NotFound};
+    }
+    if (referenceChecker_ && referenceChecker_(id)) {
+        return {.error = NamedSelectionError::InUse};
     }
     namedSelections_.erase(iterator);
     return {.success = true, .namedSelectionId = id};

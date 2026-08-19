@@ -15,6 +15,7 @@
 #include "GeometrySelection.hpp"
 #include "NamedSelectionResolver.hpp"
 #include "ResultField.hpp"
+#include "SphJobDefinition.hpp"
 #include "VtkResultSequence.hpp"
 #include "emilcae/core/DisplacementConstraintManager.hpp"
 #include "emilcae/core/MaterialManager.hpp"
@@ -33,9 +34,13 @@ class QModelIndex;
 class QPoint;
 class QStandardItem;
 class QTreeView;
+class QTimer;
 class OccViewWidget;
 class ResultControlWidget;
+class SphSolverProcess;
 class VtkPostViewWidget;
+class HistoryCurveWidget;
+struct MeshObject;
 class vtkUnstructuredGrid;
 enum class VtkMeshDisplayMode;
 
@@ -69,14 +74,45 @@ private:
     void clearSelectedMesh();
     void importHmAsciiMesh();
     void exportHmAsciiMesh();
+    void runSphAnalysis();
+    void runExistingSphConfiguration();
+    void stopSphAnalysis();
+    void handleSphRunFinished(bool success, const QString& message,
+                              const QString& outputDirectory);
+    SphDynamicMaterialDefinition initialSphMaterialForMesh(
+        const MeshObject& mesh) const;
     void importVtkResult();
     void importVtkResultSequence();
+    bool loadVtkResultSequenceDirectory(const QString& directory,
+                                        bool showErrors = true,
+                                        bool loadLastFrame = false);
+    void savePostViewImage();
+    void choosePostBackgroundColor();
+    void choosePostPointSize();
+    void createClipResult();
+    void createSliceResult();
+    void createThresholdResult();
+    void createPointToCellResult();
+    void createCellToPointResult();
+    void rebuildFilterResultTree();
+    void showFilterResultProperties(int filterId);
+    void setFilterResultVisible(QStandardItem* item, bool visible);
+    void renameFilterResult(int filterId);
+    void deleteFilterResult(int filterId);
+    void startResultAnimation();
+    void pauseResultAnimation();
+    void stopResultAnimation();
+    void advanceResultAnimation();
+    void exportResultAnimation();
+    void extractNodeHistory();
     bool loadVtkResultSequenceFrame(int frameNumber,
                                     bool firstLoad = false);
     void displayMeshInPostprocessing(int meshId = -1);
     void clearPostprocessingMeshIfMatches(int meshId);
     void showPostprocessingMeshProperties(int meshId);
     void setPostDisplayMode(VtkMeshDisplayMode mode);
+    void setVtkResultPartVisible(QStandardItem* item, bool visible);
+    void deleteVtkResultPart(int partId);
     QString postDisplayModeName() const;
     void updatePostViewActionStates();
     void clearLoadedVtkResult(bool clearView);
@@ -85,11 +121,15 @@ private:
     void showVtkResultSequenceProperties();
     void showVtkResultSequenceFrameProperties(int frameNumber);
     void showVtkResultSequencePartProperties(
-        int frameNumber, const QString& filePath);
+        int partId);
+    void showVtkResultSequencePartFrameProperties(
+        int frameNumber, const QString& partName,
+        const QString& filePath);
     void addVtkFieldTreeItem(const ResultFieldInfo& field,
                              int fieldIndex,
                              QStandardItem* parent);
     void applySelectedResultScalar();
+    bool applySelectedScalarRange(bool announce);
     bool showResultScalar(const ResultScalarOption& option);
     void updateSelectedDisplacementField();
     void setResultDeformationVisible(bool visible);
@@ -225,8 +265,22 @@ private:
     QAction* clearMeshAction_{nullptr};
     QAction* importHmAsciiAction_{nullptr};
     QAction* exportHmAsciiAction_{nullptr};
+    QAction* runSphAnalysisAction_{nullptr};
+    QAction* runExistingSphConfigurationAction_{nullptr};
+    QAction* stopSphAnalysisAction_{nullptr};
     QAction* importVtkResultAction_{nullptr};
     QAction* importVtkResultSequenceAction_{nullptr};
+    QAction* savePostViewImageAction_{nullptr};
+    QAction* postBackgroundColorAction_{nullptr};
+    QAction* postPointSizeAction_{nullptr};
+    QAction* createClipResultAction_{nullptr};
+    QAction* createSliceResultAction_{nullptr};
+    QAction* createThresholdResultAction_{nullptr};
+    QAction* pointToCellResultAction_{nullptr};
+    QAction* cellToPointResultAction_{nullptr};
+    QAction* exportResultAnimationAction_{nullptr};
+    QAction* extractNodeHistoryAction_{nullptr};
+    QAction* pointsAction_{nullptr};
     QAction* surfaceWithEdgesAction_{nullptr};
     QAction* surfaceOnlyAction_{nullptr};
     QAction* wireframeAction_{nullptr};
@@ -268,9 +322,11 @@ private:
     QDockWidget* messageLogDock_{nullptr};
     QDockWidget* taskMonitorDock_{nullptr};
     QDockWidget* resultControlDock_{nullptr};
+    QDockWidget* historyDock_{nullptr};
     QStackedWidget* workspaceStack_{nullptr};
     QStandardItemModel* propertiesModel_{nullptr};
     QStandardItemModel* projectModel_{nullptr};
+    QStandardItemModel* taskModel_{nullptr};
     QStandardItem* geometryRootItem_{nullptr};
     QStandardItem* meshRootItem_{nullptr};
     QStandardItem* materialRootItem_{nullptr};
@@ -285,17 +341,29 @@ private:
     QStandardItem* loadedResultGridItem_{nullptr};
     QStandardItem* pointResultsRootItem_{nullptr};
     QStandardItem* cellResultsRootItem_{nullptr};
+    QStandardItem* filterResultsRootItem_{nullptr};
     QHash<int, QStandardItem*> resultSequenceFrameItems_;
+    QHash<int, bool> resultPartVisibility_;
     QTreeView* projectTree_{nullptr};
     QPlainTextEdit* messageLog_{nullptr};
     OccViewWidget* occViewWidget_{nullptr};
     VtkPostViewWidget* vtkPostViewWidget_{nullptr};
     ResultControlWidget* resultControlWidget_{nullptr};
+    HistoryCurveWidget* historyCurveWidget_{nullptr};
+    SphSolverProcess* sphSolverProcess_{nullptr};
+    QTimer* resultAnimationTimer_{nullptr};
     QHash<int, QStandardItem*> geometryItems_;
     QHash<int, QStandardItem*> meshItems_;
     QHash<int, QStandardItem*> materialItems_;
-    emilcae::core::MaterialManager materialManager_;
-    emilcae::core::SolidSectionManager sectionManager_{materialManager_};
+    emilcae::core::MaterialManager materialManager_{
+        [this](int materialId) {
+            return sectionManager_.isMaterialReferenced(materialId);
+        }};
+    emilcae::core::SolidSectionManager sectionManager_{
+        materialManager_,
+        [this](emilcae::core::SolidSectionId sectionId) {
+            return assignmentManager_.isSectionReferenced(sectionId);
+        }};
     emilcae::core::SolidSectionAssignmentManager assignmentManager_{
         sectionManager_};
     QHash<int, QStandardItem*> sectionItems_;
@@ -313,12 +381,17 @@ private:
     int selectedSectionId_{-1};
     int selectedNamedSelectionId_{-1};
     int selectedConstraintId_{-1};
+    int sphTaskRow_{-1};
+    double currentSphSimulationTime_{0.0};
+    QString currentSphJobName_;
     int currentPostMeshId_{-1};
     QString loadedResultFilePath_;
     vtkSmartPointer<vtkUnstructuredGrid> loadedResultGrid_;
     std::vector<ResultFieldInfo> loadedResultFields_;
     std::optional<VtkResultSequence> loadedResultSequence_;
     int loadedResultFrameNumber_{-1};
+    bool loadedResultIsStandaloneCollection_{false};
+    int nextStandaloneResultPartId_{1};
     std::optional<ResultScalarOption> currentResultScalarOption_;
     std::optional<ResultScalarStatistics> currentResultStatistics_;
     bool syncingTreeSelection_{false};

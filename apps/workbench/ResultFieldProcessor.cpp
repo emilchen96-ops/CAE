@@ -415,6 +415,17 @@ ResultFieldProcessor::validateDeformationScale(double scale) const {
     return {.success = true};
 }
 
+ResultValidationResult ResultFieldProcessor::validateScalarRange(
+    double minimum, double maximum) const {
+    if (!std::isfinite(minimum) || !std::isfinite(maximum)) {
+        return {.errorMessage = "云图范围必须使用有限数值。"};
+    }
+    if (minimum >= maximum) {
+        return {.errorMessage = "云图最小值必须小于最大值。"};
+    }
+    return {.success = true};
+}
+
 vtkDataArray* ResultFieldProcessor::findArray(
     vtkUnstructuredGrid* grid,
     const std::string& name,

@@ -466,6 +466,10 @@ const MeshObject* GeometryObjectManager::findMeshForGeometry(
     return iterator != meshes_.cend() ? &*iterator : nullptr;
 }
 
+const std::vector<MeshObject>& GeometryObjectManager::meshes() const {
+    return meshes_;
+}
+
 std::size_t GeometryObjectManager::objectCount() const {
     return objects_.size();
 }

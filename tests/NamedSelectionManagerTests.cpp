@@ -99,6 +99,19 @@ int main() {
               manager.find(created.namedSelectionId) == nullptr,
           "remove named selection without geometry mutation");
 
+    NamedSelectionManager guardedManager(
+        [&geometryObjects](int id) { return geometryObjects.contains(id); },
+        [](NamedSelectionId) { return true; });
+    const auto guardedCreated = guardedManager.create(
+        "Guarded", NamedSelectionEntityType::Object,
+        {item(1, NamedSelectionEntityType::Object, 0)});
+    check(guardedCreated.success, "guarded manager creates selections");
+    const auto guardedRemove =
+        guardedManager.remove(guardedCreated.namedSelectionId);
+    check(!guardedRemove.success &&
+              guardedRemove.error == NamedSelectionError::InUse,
+          "remove reports InUse when referenced");
+
     if (failures == 0) {
         std::cout << "Named selection tests passed: selections="
                   << manager.namedSelections().size() << '\n';

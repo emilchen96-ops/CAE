@@ -3,6 +3,7 @@
 /out/
 /dist/
 /package/
+/tmp/
 *.exe
 *.dll
 *.pdb

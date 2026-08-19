@@ -20,8 +20,10 @@ std::string_view trimAscii(std::string_view text) {
 } // namespace
 
 SolidSectionManager::SolidSectionManager(
-    const MaterialManager& materialManager)
-    : materialManager_(materialManager) {}
+    const MaterialManager& materialManager,
+    ReferenceChecker referenceChecker)
+    : materialManager_(materialManager),
+      referenceChecker_(std::move(referenceChecker)) {}
 
 SolidSectionOperationResult SolidSectionManager::createSection(
     const std::string& name, MaterialId materialId) {
@@ -66,6 +68,9 @@ SolidSectionOperationResult SolidSectionManager::removeSection(
         });
     if (iterator == sections_.end()) {
         return {.error = SolidSectionError::NotFound};
+    }
+    if (referenceChecker_ && referenceChecker_(sectionId)) {
+        return {.error = SolidSectionError::InUse};
     }
     sections_.erase(iterator);
     return {.success = true, .sectionId = sectionId};

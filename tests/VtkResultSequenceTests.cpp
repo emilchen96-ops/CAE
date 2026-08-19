@@ -1,5 +1,7 @@
 #include "VtkResultSequenceLoader.hpp"
 #include "VtkResultSequenceScanner.hpp"
+#include "ResultFieldProcessor.hpp"
+#include "ResultHistoryExtractor.hpp"
 
 #include <vtkUnstructuredGrid.h>
 
@@ -24,16 +26,6 @@ void copyFile(const std::filesystem::path& source,
     std::filesystem::copy_file(
         source, destination,
         std::filesystem::copy_options::overwrite_existing);
-}
-
-bool containsWarning(const std::vector<std::string>& warnings,
-                     const std::string& text) {
-    for (const std::string& warning : warnings) {
-        if (warning.find(text) != std::string::npos) {
-            return true;
-        }
-    }
-    return false;
 }
 
 int validateExternalSequence(int argumentCount, char** arguments) {
@@ -97,11 +89,9 @@ int main(int argumentCount, char** arguments) {
         copyFile(source, temporary /
             ("Body0_bolt_0_" + std::to_string(frame) + ".vtk"));
     }
-    copyFile(source, temporary / "unrecognized_result.vtk");
-
     const VtkResultSequenceScanner scanner;
     const auto scan = scanner.scan(temporary);
-    expect(scan.success, "三帧 solid/bolt 序列应扫描成功");
+    expect(scan.success, "旧版 solid/bolt 序列应继续扫描成功");
     expect(scan.sequence.frames.size() == 3,
            "应识别三个帧编号");
     expect(scan.sequence.frames.front().frameNumber == 0 &&
@@ -109,8 +99,16 @@ int main(int argumentCount, char** arguments) {
            "帧应按整数编号排序");
     expect(scan.sequence.frames.front().parts.size() == 2,
            "同一帧应包含 solid 和 bolt 两个对象");
-    expect(containsWarning(scan.sequence.warnings, "已忽略"),
-           "无法识别命名的 VTK 文件应给出警告");
+    expect(scan.sequence.frames.front().parts[0].id > 0 &&
+               scan.sequence.frames.front().parts[1].id > 0 &&
+               scan.sequence.frames.front().parts[0].id !=
+                   scan.sequence.frames.front().parts[1].id,
+           "不同部件应具有不同的稳定 ID");
+    expect(scan.sequence.frames[0].parts[0].id ==
+               scan.sequence.frames[1].parts[0].id &&
+               scan.sequence.frames[0].parts[1].id ==
+                   scan.sequence.frames[1].parts[1].id,
+           "同一部件的 ID 应在帧之间保持稳定");
 
     if (scan.success) {
         const VtkResultSequenceLoader loader;
@@ -124,6 +122,12 @@ int main(int argumentCount, char** arguments) {
                    "两个对象合并后应有两个单元");
             expect(frame0.loadedParts.size() == 2,
                    "加载结果应记录两个对象");
+            expect(frame0.parts.size() == 2 &&
+                       frame0.parts[0].firstCell == 0 &&
+                       frame0.parts[0].cellCount == 1 &&
+                       frame0.parts[1].firstCell == 1 &&
+                       frame0.parts[1].cellCount == 1,
+                   "加载结果应记录各部件连续的单元范围");
             expect(!frame0.fields.empty(),
                    "兼容公共结果字段应保留");
         }
@@ -132,18 +136,97 @@ int main(int argumentCount, char** arguments) {
                "切换到第二帧应加载成功");
         expect(frame0.grid != frame1.grid,
                "不同帧应生成独立网格而非预加载全部帧");
+        VtkResultSequenceFrame afterRemoval = scan.sequence.frames[0];
+        afterRemoval.parts.erase(afterRemoval.parts.begin());
+        const auto remaining = loader.load(afterRemoval);
+        expect(remaining.success && remaining.parts.size() == 1 &&
+                   remaining.grid != nullptr &&
+                   remaining.grid->GetNumberOfCells() == 1,
+               "删除一个结果部件后应只重新加载剩余部件");
+        VtkResultSequence sequenceAfterRemoval = scan.sequence;
+        const int removedPartId =
+            sequenceAfterRemoval.frames.front().parts.front().id;
+        for (auto& frame : sequenceAfterRemoval.frames) {
+            std::erase_if(
+                frame.parts,
+                [removedPartId](const VtkResultSequencePart& part) {
+                    return part.id == removedPartId;
+                });
+        }
+        bool allFramesKeepOnlyRemainingPart = true;
+        for (const auto& frame : sequenceAfterRemoval.frames) {
+            const auto reloaded = loader.load(frame);
+            allFramesKeepOnlyRemainingPart =
+                allFramesKeepOnlyRemainingPart && reloaded.success &&
+                reloaded.parts.size() == 1 &&
+                reloaded.parts.front().id != removedPartId;
+        }
+        expect(allFramesKeepOnlyRemainingPart,
+               "从结果序列删除部件后应在所有帧移除相同稳定 ID");
+        if (!frame0.fields.empty()) {
+            const auto pointField = std::find_if(
+                frame0.fields.begin(), frame0.fields.end(),
+                [](const ResultFieldInfo& field) {
+                    return field.association == ResultFieldAssociation::Point;
+                });
+            if (pointField != frame0.fields.end()) {
+                const ResultFieldProcessor processor;
+                const auto options = processor.scalarOptions(*pointField);
+                if (!options.empty()) {
+                    const ResultHistoryExtractor extractor;
+                    const auto history = extractor.extractNodeHistory(
+                        scan.sequence, options.front(), 10,
+                        scan.sequence.frames.front().parts.front().id);
+                    expect(history.success && history.curve.points.size() == 3,
+                           "节点时间历程应按需读取全部三帧");
+                    expect(history.curve.usesFrameNumberAsTime,
+                           "缺少物理时间时应明确使用帧编号");
+                }
+            }
+        }
     }
 
-    const std::filesystem::path missingPart =
-        temporary / "missing_part";
-    std::filesystem::create_directories(missingPart);
-    copyFile(source, missingPart / "solid_7.vtk");
-    const auto missingScan = scanner.scan(missingPart);
-    expect(missingScan.success &&
-               missingScan.sequence.frames.size() == 1,
-           "缺少一个对象时仍应识别可用帧");
-    expect(containsWarning(missingScan.sequence.warnings, "缺少 bolt"),
-           "缺少 bolt 应提供明确警告");
+    const std::filesystem::path generic = temporary / "generic";
+    std::filesystem::create_directories(generic);
+    for (int frame = 0; frame <= 2; ++frame) {
+        copyFile(source, generic /
+            ("shell_" + std::to_string(frame) + ".vtk"));
+        copyFile(source, generic /
+            ("support_" + std::to_string(frame) + ".vtk"));
+    }
+    const auto genericScan = scanner.scan(generic);
+    expect(genericScan.success &&
+               genericScan.sequence.frames.size() == 3,
+           "任意名称的多部件序列应扫描成功");
+    expect(genericScan.sequence.frames.front().parts.size() == 2,
+           "同一帧应保留全部通用部件");
+    expect(genericScan.sequence.frames.front().parts[0].name == "shell" &&
+               genericScan.sequence.frames.front().parts[1].name ==
+                   "support",
+           "通用部件名称应由帧号前的文件名得到");
+
+    const std::filesystem::path single = temporary / "single";
+    std::filesystem::create_directories(single);
+    copyFile(source, single / "temperature_result.vtk");
+    const auto singleScan = scanner.scan(single);
+    expect(singleScan.success &&
+               singleScan.sequence.frames.size() == 1 &&
+               singleScan.sequence.frames.front().frameNumber == 0 &&
+               singleScan.sequence.frames.front().parts.size() == 1,
+           "没有数字后缀的普通 VTK 文件应作为帧 0 导入");
+    expect(singleScan.sequence.frames.front().parts.front().name ==
+               "temperature_result",
+           "普通 VTK 文件名应作为部件名称");
+
+    const std::filesystem::path numberedSingle =
+        temporary / "numbered_single";
+    std::filesystem::create_directories(numberedSingle);
+    copyFile(source, numberedSingle / "result_7.vtk");
+    const auto numberedSingleScan = scanner.scan(numberedSingle);
+    expect(numberedSingleScan.success &&
+               numberedSingleScan.sequence.frames.size() == 1 &&
+               numberedSingleScan.sequence.frames.front().frameNumber == 7,
+           "任意单部件数字后缀应识别为帧号");
 
     const std::filesystem::path duplicate =
         temporary / "duplicate";
@@ -153,6 +236,10 @@ int main(int argumentCount, char** arguments) {
              duplicate / "solid_0.vtu");
     expect(!scanner.scan(duplicate).success,
            "同帧同对象的重复文件应拒绝");
+    const std::filesystem::path empty = temporary / "empty";
+    std::filesystem::create_directories(empty);
+    expect(!scanner.scan(empty).success,
+           "没有 VTK/VTU 文件的目录应拒绝");
     expect(!scanner.scan(temporary / "not_found").success,
            "不存在目录应拒绝");
 

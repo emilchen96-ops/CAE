@@ -20,6 +20,9 @@ std::string_view trimAscii(std::string_view text) {
 
 } // namespace
 
+MaterialManager::MaterialManager(ReferenceChecker referenceChecker)
+    : referenceChecker_(std::move(referenceChecker)) {}
+
 MaterialOperationResult MaterialManager::createMaterial(
     const Material& material) {
     const MaterialError error = validate(material);
@@ -79,6 +82,9 @@ MaterialOperationResult MaterialManager::removeMaterial(int materialId) {
         });
     if (iterator == materials_.end()) {
         return {.error = MaterialError::NotFound};
+    }
+    if (referenceChecker_ && referenceChecker_(materialId)) {
+        return {.error = MaterialError::InUse};
     }
     materials_.erase(iterator);
     return {.success = true, .materialId = materialId};

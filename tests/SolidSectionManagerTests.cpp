@@ -100,6 +100,20 @@ int main() {
                               8, aluminumSection.sectionId).success,
           "reject assignment to deleted section");
 
+    MaterialManager guardedMaterials;
+    const int guardedMaterialId =
+        guardedMaterials.createMaterial(material("Guarded Steel")).materialId;
+    SolidSectionManager guardedSections(
+        guardedMaterials, [](SolidSectionId) { return true; });
+    const auto guardedCreate = guardedSections.createSection(
+        "Guarded Section", guardedMaterialId);
+    check(guardedCreate.success, "guarded manager creates sections");
+    const auto guardedRemove =
+        guardedSections.removeSection(guardedCreate.sectionId);
+    check(!guardedRemove.success &&
+              guardedRemove.error == SolidSectionError::InUse,
+          "removeSection reports InUse when referenced");
+
     if (failures == 0) {
         std::cout << "Solid section tests passed: sections="
                   << sections.sections().size()

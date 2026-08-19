@@ -44,6 +44,7 @@ public:
     const GeometryObject* findGeometryObject(int objectId) const;
     const MeshObject* findMesh(int meshId) const;
     const MeshObject* findMeshForGeometry(int geometryObjectId) const;
+    const std::vector<MeshObject>& meshes() const;
     std::size_t geometryObjectCount() const;
     std::size_t meshCount() const;
     void setSelectionMode(SelectionMode mode);

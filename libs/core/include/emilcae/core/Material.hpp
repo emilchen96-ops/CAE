@@ -36,7 +36,8 @@ enum class MaterialError {
     DuplicateName,
     InvalidDensity,
     InvalidYoungsModulus,
-    InvalidPoissonRatio
+    InvalidPoissonRatio,
+    InUse
 };
 
 struct MaterialOperationResult {

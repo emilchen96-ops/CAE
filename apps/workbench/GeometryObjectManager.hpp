@@ -66,6 +66,7 @@ public:
         const Handle(AIS_InteractiveObject)& presentation) const;
     const MeshObject* findMesh(int meshId) const;
     const MeshObject* findMeshForGeometry(int geometryObjectId) const;
+    const std::vector<MeshObject>& meshes() const;
     std::size_t objectCount() const;
     std::size_t meshCount() const;
 

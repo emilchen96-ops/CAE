@@ -5,6 +5,7 @@
 #include <vector>
 
 struct VtkResultSequencePart {
+    int id{-1};
     std::string name;
     std::filesystem::path filePath;
 };

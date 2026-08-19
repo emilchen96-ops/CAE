@@ -39,7 +39,8 @@ enum class NamedSelectionError {
     MixedEntityTypes,
     InvalidGeometryObject,
     InvalidLocalIndex,
-    WouldBecomeEmpty
+    WouldBecomeEmpty,
+    InUse
 };
 
 struct NamedSelectionOperationResult {

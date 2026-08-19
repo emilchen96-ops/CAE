@@ -143,6 +143,18 @@ int main() {
               missingRemove.error == MaterialError::NotFound,
           "remove missing material reports explicit error");
 
+    MaterialManager guardedManager([](int materialId) {
+        return materialId == 1;
+    });
+    const auto guardedCreate = guardedManager.createMaterial(validMaterial());
+    check(guardedCreate.success && guardedCreate.materialId == 1,
+          "guarded manager creates materials");
+    const auto guardedRemove =
+        guardedManager.removeMaterial(guardedCreate.materialId);
+    check(!guardedRemove.success &&
+              guardedRemove.error == MaterialError::InUse,
+          "removeMaterial reports InUse when referenced");
+
     if (failures == 0) {
         std::cout << "Material manager tests passed: materials="
                   << manager.materials().size()

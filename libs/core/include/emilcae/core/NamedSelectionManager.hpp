@@ -10,8 +10,11 @@ namespace emilcae::core {
 class NamedSelectionManager {
 public:
     using GeometryObjectExists = std::function<bool(int)>;
+    using ReferenceChecker = std::function<bool(NamedSelectionId)>;
 
-    explicit NamedSelectionManager(GeometryObjectExists geometryObjectExists);
+    explicit NamedSelectionManager(
+        GeometryObjectExists geometryObjectExists,
+        ReferenceChecker referenceChecker = {});
 
     NamedSelectionOperationResult create(
         const std::string& name, NamedSelectionEntityType entityType,
@@ -51,6 +54,7 @@ private:
     NamedSelection* findMutable(NamedSelectionId id);
 
     GeometryObjectExists geometryObjectExists_;
+    ReferenceChecker referenceChecker_;
     std::vector<NamedSelection> namedSelections_;
     NamedSelectionId nextId_{1};
 };

@@ -7,11 +7,14 @@
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QLabel>
 #include <QPushButton>
 #include <QSignalBlocker>
 
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <limits>
 
 namespace {
 
@@ -43,9 +46,41 @@ ResultControlWidget::ResultControlWidget(QWidget* parent)
     frameLayout->addWidget(frameCombo_, 1);
     frameLayout->addWidget(nextFrameButton_);
 
+    auto* playbackContainer = new QWidget(this);
+    auto* playbackLayout = new QHBoxLayout(playbackContainer);
+    playbackLayout->setContentsMargins(0, 0, 0, 0);
+    playButton_ = new QPushButton(tr("播放"), playbackContainer);
+    pauseButton_ = new QPushButton(tr("暂停"), playbackContainer);
+    stopButton_ = new QPushButton(tr("停止"), playbackContainer);
+    playbackLayout->addWidget(playButton_);
+    playbackLayout->addWidget(pauseButton_);
+    playbackLayout->addWidget(stopButton_);
+    playbackSpeedCombo_ = new QComboBox(this);
+    for (const double speed : {0.25, 0.5, 1.0, 2.0, 4.0})
+        playbackSpeedCombo_->addItem(tr("%1x").arg(speed), speed);
+    playbackSpeedCombo_->setCurrentIndex(2);
+    loopPlaybackCheck_ = new QCheckBox(tr("循环播放"), this);
+    currentTimeLabel_ = new QLabel(tr("未提供"), this);
+
     fieldCombo_ = new QComboBox(this);
     componentCombo_ = new QComboBox(this);
     scalarCheck_ = new QCheckBox(tr("显示"), this);
+    scalarRangeModeCombo_ = new QComboBox(this);
+    scalarRangeModeCombo_->addItem(
+        tr("自动"), static_cast<int>(ResultScalarRangeMode::Automatic));
+    scalarRangeModeCombo_->addItem(
+        tr("手动"), static_cast<int>(ResultScalarRangeMode::Manual));
+    scalarMinimumSpin_ = new QDoubleSpinBox(this);
+    scalarMaximumSpin_ = new QDoubleSpinBox(this);
+    for (QDoubleSpinBox* spin : {scalarMinimumSpin_, scalarMaximumSpin_}) {
+        spin->setRange(-std::numeric_limits<double>::max(),
+                       std::numeric_limits<double>::max());
+        spin->setDecimals(10);
+        spin->setKeyboardTracking(false);
+    }
+    scalarMinimumSpin_->setValue(0.0);
+    scalarMaximumSpin_->setValue(1.0);
+    applyScalarRangeButton_ = new QPushButton(tr("应用范围"), this);
     displacementCombo_ = new QComboBox(this);
     deformationCheck_ = new QCheckBox(tr("显示"), this);
     deformationScaleSpin_ = new QDoubleSpinBox(this);
@@ -57,9 +92,17 @@ ResultControlWidget::ResultControlWidget(QWidget* parent)
     legendCheck_->setChecked(true);
 
     layout->addRow(tr("结果帧："), frameContainer);
+    layout->addRow(tr("动画："), playbackContainer);
+    layout->addRow(tr("播放速度："), playbackSpeedCombo_);
+    layout->addRow(QString(), loopPlaybackCheck_);
+    layout->addRow(tr("当前时间："), currentTimeLabel_);
     layout->addRow(tr("结果字段："), fieldCombo_);
     layout->addRow(tr("显示分量："), componentCombo_);
     layout->addRow(tr("显示云图："), scalarCheck_);
+    layout->addRow(tr("云图范围："), scalarRangeModeCombo_);
+    layout->addRow(tr("范围最小值："), scalarMinimumSpin_);
+    layout->addRow(tr("范围最大值："), scalarMaximumSpin_);
+    layout->addRow(QString(), applyScalarRangeButton_);
     layout->addRow(tr("位移字段："), displacementCombo_);
     layout->addRow(tr("显示变形："), deformationCheck_);
     layout->addRow(tr("变形倍率："), deformationScaleSpin_);
@@ -97,6 +140,30 @@ ResultControlWidget::ResultControlWidget(QWidget* parent)
             this, &ResultControlWidget::scalarSelectionChanged);
     connect(scalarCheck_, &QCheckBox::toggled,
             this, &ResultControlWidget::scalarVisibilityChanged);
+    connect(scalarRangeModeCombo_, &QComboBox::currentIndexChanged,
+            this, [this] {
+                if (scalarRangeMode() == ResultScalarRangeMode::Manual &&
+                    !manualScalarRangeInitialized_ &&
+                    automaticScalarRangeAvailable_) {
+                    setManualScalarRange(automaticScalarMinimum_,
+                                         automaticScalarMaximum_);
+                } else if (scalarRangeMode() ==
+                               ResultScalarRangeMode::Automatic &&
+                           automaticScalarRangeAvailable_) {
+                    setAutomaticScalarRange(automaticScalarMinimum_,
+                                            automaticScalarMaximum_);
+                }
+                updateScalarRangeControls();
+                emit scalarRangeChangeRequested();
+            });
+    connect(playButton_, &QPushButton::clicked,
+            this, &ResultControlWidget::playRequested);
+    connect(pauseButton_, &QPushButton::clicked,
+            this, &ResultControlWidget::pauseRequested);
+    connect(stopButton_, &QPushButton::clicked,
+            this, &ResultControlWidget::stopRequested);
+    connect(applyScalarRangeButton_, &QPushButton::clicked,
+            this, &ResultControlWidget::scalarRangeChangeRequested);
     connect(displacementCombo_, &QComboBox::currentIndexChanged,
             this, [this] {
                 const bool hasDisplacement =
@@ -137,6 +204,9 @@ void ResultControlWidget::setResultFields(
     const QSignalBlocker displacementBlocker(displacementCombo_);
     const QSignalBlocker deformationBlocker(deformationCheck_);
     const QSignalBlocker legendBlocker(legendCheck_);
+    const QSignalBlocker rangeModeBlocker(scalarRangeModeCombo_);
+    const QSignalBlocker minimumBlocker(scalarMinimumSpin_);
+    const QSignalBlocker maximumBlocker(scalarMaximumSpin_);
 
     fieldCombo_->clear();
     int defaultField = -1;
@@ -195,9 +265,15 @@ void ResultControlWidget::setResultFields(
     deformationCheck_->setChecked(false);
     deformationScaleSpin_->setValue(1.0);
     legendCheck_->setChecked(true);
+    scalarRangeModeCombo_->setCurrentIndex(0);
+    scalarMinimumSpin_->setValue(0.0);
+    scalarMaximumSpin_->setValue(1.0);
+    automaticScalarRangeAvailable_ = false;
+    manualScalarRangeInitialized_ = false;
     setEnabled(!fields_.empty());
     deformationCheck_->setEnabled(
         displacementCombo_->currentData().toInt() >= 0);
+    updateScalarRangeControls();
 }
 
 void ResultControlWidget::clearResult() {
@@ -207,6 +283,9 @@ void ResultControlWidget::clearResult() {
     const QSignalBlocker displacementBlocker(displacementCombo_);
     const QSignalBlocker deformationBlocker(deformationCheck_);
     const QSignalBlocker legendBlocker(legendCheck_);
+    const QSignalBlocker rangeModeBlocker(scalarRangeModeCombo_);
+    const QSignalBlocker minimumBlocker(scalarMinimumSpin_);
+    const QSignalBlocker maximumBlocker(scalarMaximumSpin_);
     fieldCombo_->clear();
     componentCombo_->clear();
     displacementCombo_->clear();
@@ -216,7 +295,13 @@ void ResultControlWidget::clearResult() {
     deformationCheck_->setChecked(false);
     deformationScaleSpin_->setValue(1.0);
     legendCheck_->setChecked(true);
+    scalarRangeModeCombo_->setCurrentIndex(0);
+    scalarMinimumSpin_->setValue(0.0);
+    scalarMaximumSpin_->setValue(1.0);
+    automaticScalarRangeAvailable_ = false;
+    manualScalarRangeInitialized_ = false;
     setEnabled(false);
+    updateScalarRangeControls();
 }
 
 void ResultControlWidget::setSequenceFrames(
@@ -231,7 +316,11 @@ void ResultControlWidget::setSequenceFrames(
     frameCombo_->setEnabled(!frameNumbers.empty());
     previousFrameButton_->setEnabled(hasMultipleFrames);
     nextFrameButton_->setEnabled(hasMultipleFrames);
+    playButton_->setEnabled(hasMultipleFrames && !playbackActive_);
+    pauseButton_->setEnabled(hasMultipleFrames && playbackActive_);
+    stopButton_->setEnabled(hasMultipleFrames);
     selectFrame(currentFrame);
+    updateCurrentTime(currentFrame);
 }
 
 void ResultControlWidget::clearSequence() {
@@ -240,6 +329,11 @@ void ResultControlWidget::clearSequence() {
     frameCombo_->setEnabled(false);
     previousFrameButton_->setEnabled(false);
     nextFrameButton_->setEnabled(false);
+    playButton_->setEnabled(false);
+    pauseButton_->setEnabled(false);
+    stopButton_->setEnabled(false);
+    playbackActive_ = false;
+    currentTimeLabel_->setText(tr("未提供"));
 }
 
 std::optional<ResultScalarOption>
@@ -282,6 +376,19 @@ bool ResultControlWidget::legendVisible() const {
 
 double ResultControlWidget::deformationScale() const {
     return deformationScaleSpin_->value();
+}
+
+ResultScalarRangeMode ResultControlWidget::scalarRangeMode() const {
+    return static_cast<ResultScalarRangeMode>(
+        scalarRangeModeCombo_->currentData().toInt());
+}
+
+double ResultControlWidget::manualScalarMinimum() const {
+    return scalarMinimumSpin_->value();
+}
+
+double ResultControlWidget::manualScalarMaximum() const {
+    return scalarMaximumSpin_->value();
 }
 
 bool ResultControlWidget::selectScalarOption(
@@ -356,6 +463,58 @@ void ResultControlWidget::setLegendChecked(bool checked) {
     legendCheck_->setChecked(checked);
 }
 
+void ResultControlWidget::setAutomaticScalarRange(
+    double minimum, double maximum) {
+    if (!std::isfinite(minimum) || !std::isfinite(maximum) ||
+        minimum >= maximum) {
+        return;
+    }
+    automaticScalarMinimum_ = minimum;
+    automaticScalarMaximum_ = maximum;
+    automaticScalarRangeAvailable_ = true;
+    if (scalarRangeMode() == ResultScalarRangeMode::Automatic ||
+        !manualScalarRangeInitialized_) {
+        const QSignalBlocker minimumBlocker(scalarMinimumSpin_);
+        const QSignalBlocker maximumBlocker(scalarMaximumSpin_);
+        scalarMinimumSpin_->setValue(minimum);
+        scalarMaximumSpin_->setValue(maximum);
+    }
+}
+
+void ResultControlWidget::setScalarRangeMode(
+    ResultScalarRangeMode mode) {
+    const int index = scalarRangeModeCombo_->findData(
+        static_cast<int>(mode));
+    if (index < 0) {
+        return;
+    }
+    const QSignalBlocker blocker(scalarRangeModeCombo_);
+    scalarRangeModeCombo_->setCurrentIndex(index);
+    if (mode == ResultScalarRangeMode::Manual &&
+        !manualScalarRangeInitialized_ &&
+        automaticScalarRangeAvailable_) {
+        setManualScalarRange(automaticScalarMinimum_,
+                             automaticScalarMaximum_);
+    } else if (mode == ResultScalarRangeMode::Automatic &&
+               automaticScalarRangeAvailable_) {
+        setAutomaticScalarRange(automaticScalarMinimum_,
+                                automaticScalarMaximum_);
+    }
+    updateScalarRangeControls();
+}
+
+void ResultControlWidget::setManualScalarRange(
+    double minimum, double maximum) {
+    if (!std::isfinite(minimum) || !std::isfinite(maximum)) {
+        return;
+    }
+    const QSignalBlocker minimumBlocker(scalarMinimumSpin_);
+    const QSignalBlocker maximumBlocker(scalarMaximumSpin_);
+    scalarMinimumSpin_->setValue(minimum);
+    scalarMaximumSpin_->setValue(maximum);
+    manualScalarRangeInitialized_ = true;
+}
+
 bool ResultControlWidget::selectFrame(int frameNumber) {
     for (int index = 0; index < frameCombo_->count(); ++index) {
         if (frameCombo_->itemData(index).toInt() != frameNumber) {
@@ -365,6 +524,7 @@ bool ResultControlWidget::selectFrame(int frameNumber) {
         frameCombo_->setCurrentIndex(index);
         previousFrameButton_->setEnabled(index > 0);
         nextFrameButton_->setEnabled(index + 1 < frameCombo_->count());
+        updateCurrentTime(frameNumber);
         return true;
     }
     return false;
@@ -389,4 +549,55 @@ void ResultControlWidget::updateComponents() {
             optionIndex);
     }
     componentCombo_->setCurrentIndex(options.empty() ? -1 : 0);
+}
+
+int ResultControlWidget::currentFrame() const {
+    return frameCombo_->currentData().toInt();
+}
+
+int ResultControlWidget::firstFrame() const {
+    return frameCombo_->count() > 0 ? frameCombo_->itemData(0).toInt() : -1;
+}
+
+int ResultControlWidget::nextFrame(bool loop) const {
+    const int index = frameCombo_->currentIndex();
+    if (index < 0 || frameCombo_->count() <= 1) return -1;
+    if (index + 1 < frameCombo_->count())
+        return frameCombo_->itemData(index + 1).toInt();
+    return loop ? frameCombo_->itemData(0).toInt() : -1;
+}
+
+double ResultControlWidget::playbackSpeed() const {
+    return playbackSpeedCombo_->currentData().toDouble();
+}
+
+bool ResultControlWidget::loopPlayback() const {
+    return loopPlaybackCheck_->isChecked();
+}
+
+void ResultControlWidget::setPlaybackActive(bool active) {
+    playbackActive_ = active;
+    playButton_->setEnabled(!active && frameCombo_->count() > 1);
+    pauseButton_->setEnabled(active);
+    stopButton_->setEnabled(frameCombo_->count() > 1);
+}
+
+void ResultControlWidget::updateCurrentTime(int frameNumber) {
+    const int totalFrames = frameCombo_->count();
+    const int ordinal = frameCombo_->currentIndex() + 1;
+    currentTimeLabel_->setText(
+        totalFrames > 0
+            ? tr("未提供（帧 %1，%2/%3）")
+                  .arg(frameNumber)
+                  .arg(ordinal)
+                  .arg(totalFrames)
+            : tr("未提供"));
+}
+
+void ResultControlWidget::updateScalarRangeControls() {
+    const bool manual =
+        scalarRangeMode() == ResultScalarRangeMode::Manual;
+    scalarMinimumSpin_->setEnabled(manual);
+    scalarMaximumSpin_->setEnabled(manual);
+    applyScalarRangeButton_->setEnabled(manual);
 }

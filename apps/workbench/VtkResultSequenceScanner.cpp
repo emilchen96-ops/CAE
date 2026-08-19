@@ -19,30 +19,36 @@ std::string lowerAscii(std::string value) {
 
 bool parseSequenceName(const std::string& stem, std::string& part,
                        int& frameNumber) {
-    static const std::regex fullPattern(
-        R"(^.+_(solid|bolt)_[0-9]+_([0-9]+)$)",
-        std::regex::icase);
-    static const std::regex compactPattern(
-        R"(^(solid|bolt)_([0-9]+)$)", std::regex::icase);
-    static const std::regex prefixedPattern(
-        R"(^.+_(solid|bolt)_([0-9]+)$)", std::regex::icase);
-    std::smatch match;
-    if (!std::regex_match(stem, match, fullPattern) &&
-        !std::regex_match(stem, match, compactPattern) &&
-        !std::regex_match(stem, match, prefixedPattern)) {
+    if (stem.empty()) {
         return false;
     }
+    static const std::regex legacyPattern(
+        R"(^.+_(solid|bolt)_[0-9]+_([0-9]+)$)",
+        std::regex::icase);
+    static const std::regex numberedPattern(
+        R"(^(.+)[_-]([0-9]+)$)");
+    std::smatch match;
+    if (std::regex_match(stem, match, legacyPattern)) {
+        try {
+            part = lowerAscii(match[1].str());
+            frameNumber = std::stoi(match[2].str());
+            return frameNumber >= 0;
+        } catch (...) {
+            return false;
+        }
+    }
+    if (!std::regex_match(stem, match, numberedPattern)) {
+        part = stem;
+        frameNumber = 0;
+        return true;
+    }
     try {
-        part = lowerAscii(match[1].str());
+        part = match[1].str();
         frameNumber = std::stoi(match[2].str());
-        return frameNumber >= 0;
+        return !part.empty() && frameNumber >= 0;
     } catch (...) {
         return false;
     }
-}
-
-int partRank(const std::string& name) {
-    return name == "solid" ? 0 : 1;
 }
 
 } // namespace
@@ -87,18 +93,31 @@ VtkResultSequenceScanResult VtkResultSequenceScanner::scan(
                 continue;
             }
             auto& frameParts = indexedParts[frameNumber];
-            if (frameParts.contains(part)) {
+            const std::string partKey = lowerAscii(part);
+            if (frameParts.contains(partKey)) {
                 result.errorMessage =
                     "同一帧存在重复的“" + part + "”结果文件：帧 " +
                     std::to_string(frameNumber) + "。";
                 return result;
             }
-            frameParts.emplace(part, entry.path());
+            frameParts.emplace(partKey, entry.path());
         }
         if (indexedParts.empty()) {
             result.errorMessage =
-                "目录中没有识别到 solid 或 bolt 的 VTK 结果帧。";
+                "目录中没有找到可导入的 VTK 或 VTU 结果文件。";
             return result;
+        }
+
+        std::map<std::string, int> partIds;
+        int nextPartId = 1;
+        for (const auto& [frameNumber, parts] : indexedParts) {
+            (void)frameNumber;
+            for (const auto& [partKey, path] : parts) {
+                (void)path;
+                if (!partIds.contains(partKey)) {
+                    partIds.emplace(partKey, nextPartId++);
+                }
+            }
         }
 
         result.sequence.directory = directory;
@@ -106,23 +125,22 @@ VtkResultSequenceScanResult VtkResultSequenceScanner::scan(
             VtkResultSequenceFrame frame;
             frame.frameNumber = frameNumber;
             for (auto& [name, path] : parts) {
-                frame.parts.push_back({name, std::move(path)});
+                std::string displayName;
+                int parsedFrameNumber = -1;
+                if (!parseSequenceName(path.stem().string(),
+                                       displayName,
+                                       parsedFrameNumber)) {
+                    displayName = path.stem().string();
+                }
+                frame.parts.push_back(
+                    {partIds.at(name), displayName, std::move(path)});
             }
             std::sort(
                 frame.parts.begin(), frame.parts.end(),
                 [](const auto& left, const auto& right) {
-                    return partRank(left.name) < partRank(right.name);
+                    return lowerAscii(left.name) <
+                           lowerAscii(right.name);
                 });
-            if (!parts.contains("solid")) {
-                result.sequence.warnings.push_back(
-                    "帧 " + std::to_string(frameNumber) +
-                    " 缺少 solid 结果文件。");
-            }
-            if (!parts.contains("bolt")) {
-                result.sequence.warnings.push_back(
-                    "帧 " + std::to_string(frameNumber) +
-                    " 缺少 bolt 结果文件。");
-            }
             result.sequence.frames.push_back(std::move(frame));
         }
         result.success = true;

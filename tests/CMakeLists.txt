@@ -52,6 +52,36 @@ endif()
 
 add_test(NAME HmAsciiMeshIo COMMAND QTCAE_HmAsciiTests)
 
+add_executable(QTCAE_SphJobWriterTests
+    SphJobWriterTests.cpp
+    ../apps/workbench/SphJobDefinition.hpp
+    ../apps/workbench/SphJobWriter.cpp
+    ../apps/workbench/SphJobWriter.hpp
+    ../apps/workbench/HmAsciiMeshIo.cpp
+    ../apps/workbench/HmAsciiMeshIo.hpp
+    ../apps/workbench/MeshData.hpp
+    ../apps/workbench/VtkResultSequence.hpp
+    ../apps/workbench/VtkResultSequenceScanner.cpp
+    ../apps/workbench/VtkResultSequenceScanner.hpp
+)
+target_include_directories(QTCAE_SphJobWriterTests PRIVATE
+    ../apps/workbench
+)
+target_link_libraries(QTCAE_SphJobWriterTests PRIVATE Qt6::Core)
+target_compile_features(QTCAE_SphJobWriterTests PRIVATE cxx_std_20)
+if(MSVC)
+    target_compile_options(QTCAE_SphJobWriterTests PRIVATE /utf-8 /FS)
+endif()
+if(WIN32)
+    add_custom_command(TARGET QTCAE_SphJobWriterTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:Qt6::Core>
+            $<TARGET_FILE_DIR:QTCAE_SphJobWriterTests>
+    )
+endif()
+add_test(NAME SphJobWriter COMMAND QTCAE_SphJobWriterTests)
+set_tests_properties(SphJobWriter PROPERTIES SKIP_RETURN_CODE 77)
+
 add_executable(QTCAE_MaterialTests
     MaterialManagerTests.cpp
 )
@@ -177,6 +207,11 @@ add_test(NAME VtkResultReaderAndProcessor
 add_executable(QTCAE_VtkResultSequenceTests
     VtkResultSequenceTests.cpp
     ../apps/workbench/ResultField.hpp
+    ../apps/workbench/ResultFieldProcessor.cpp
+    ../apps/workbench/ResultFieldProcessor.hpp
+    ../apps/workbench/ResultHistory.hpp
+    ../apps/workbench/ResultHistoryExtractor.cpp
+    ../apps/workbench/ResultHistoryExtractor.hpp
     ../apps/workbench/VtkResultReader.cpp
     ../apps/workbench/VtkResultReader.hpp
     ../apps/workbench/VtkResultSequence.hpp
@@ -215,3 +250,134 @@ endif()
 
 add_test(NAME VtkResultSequence
          COMMAND QTCAE_VtkResultSequenceTests)
+
+add_executable(QTCAE_SphResultCompatibilityTests
+    SphResultCompatibilityTests.cpp
+    ../apps/workbench/ResultField.hpp
+    ../apps/workbench/VtkResultReader.cpp
+    ../apps/workbench/VtkResultReader.hpp
+    ../apps/workbench/VtkResultSequence.hpp
+    ../apps/workbench/VtkResultSequenceLoader.cpp
+    ../apps/workbench/VtkResultSequenceLoader.hpp
+    ../apps/workbench/VtkResultSequenceScanner.cpp
+    ../apps/workbench/VtkResultSequenceScanner.hpp
+)
+target_include_directories(QTCAE_SphResultCompatibilityTests PRIVATE
+    ../apps/workbench
+)
+target_link_libraries(QTCAE_SphResultCompatibilityTests PRIVATE
+    VTK::CommonCore
+    VTK::CommonDataModel
+    VTK::CommonMisc
+    VTK::FiltersCore
+    VTK::IOLegacy
+    VTK::IOXML
+)
+target_compile_features(QTCAE_SphResultCompatibilityTests PRIVATE cxx_std_20)
+if(MSVC)
+    target_compile_options(
+        QTCAE_SphResultCompatibilityTests PRIVATE /utf-8 /FS)
+endif()
+if(WIN32)
+    add_custom_command(TARGET QTCAE_SphResultCompatibilityTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_RUNTIME_DLLS:QTCAE_SphResultCompatibilityTests>
+            $<TARGET_FILE_DIR:QTCAE_SphResultCompatibilityTests>
+        COMMAND_EXPAND_LISTS
+    )
+endif()
+
+add_test(NAME SphResultCompatibility
+         COMMAND QTCAE_SphResultCompatibilityTests)
+set_tests_properties(SphResultCompatibility PROPERTIES SKIP_RETURN_CODE 77)
+
+add_executable(QTCAE_PostFilterPipelineTests
+    PostFilterPipelineTests.cpp
+    ../apps/workbench/ResultField.hpp
+    ../apps/workbench/VtkResultReader.cpp
+    ../apps/workbench/VtkResultReader.hpp
+)
+target_include_directories(QTCAE_PostFilterPipelineTests PRIVATE
+    ../apps/workbench)
+target_link_libraries(QTCAE_PostFilterPipelineTests PRIVATE
+    VTK::CommonCore
+    VTK::CommonDataModel
+    VTK::CommonMisc
+    VTK::FiltersCore
+    VTK::FiltersGeneral
+    VTK::IOLegacy
+    VTK::IOXML
+)
+target_compile_features(QTCAE_PostFilterPipelineTests PRIVATE cxx_std_20)
+target_compile_definitions(QTCAE_PostFilterPipelineTests PRIVATE
+    QTCAE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/postprocessing")
+if(MSVC)
+    target_compile_options(QTCAE_PostFilterPipelineTests PRIVATE /utf-8 /FS)
+endif()
+if(WIN32)
+    add_custom_command(TARGET QTCAE_PostFilterPipelineTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_RUNTIME_DLLS:QTCAE_PostFilterPipelineTests>
+            $<TARGET_FILE_DIR:QTCAE_PostFilterPipelineTests>
+        COMMAND_EXPAND_LISTS)
+endif()
+add_test(NAME PostFilterPipeline COMMAND QTCAE_PostFilterPipelineTests)
+
+find_package(Qt6 REQUIRED COMPONENTS Widgets OpenGL OpenGLWidgets)
+add_executable(QTCAE_PostViewWidgetIntegrationTests
+    PostViewWidgetIntegrationTests.cpp
+    ../apps/workbench/MeshData.hpp
+    ../apps/workbench/MeshDataToVtkConverter.cpp
+    ../apps/workbench/MeshDataToVtkConverter.hpp
+    ../apps/workbench/ResultField.hpp
+    ../apps/workbench/VtkPostViewWidget.cpp
+    ../apps/workbench/VtkPostViewWidget.hpp
+    ../apps/workbench/VtkResultReader.cpp
+    ../apps/workbench/VtkResultReader.hpp
+)
+set_target_properties(QTCAE_PostViewWidgetIntegrationTests PROPERTIES AUTOMOC ON)
+target_include_directories(QTCAE_PostViewWidgetIntegrationTests PRIVATE
+    ../apps/workbench)
+set(QTCAE_POST_VIEW_TEST_VTK_LIBRARIES
+    VTK::CommonCore
+    VTK::CommonDataModel
+    VTK::CommonMisc
+    VTK::FiltersCore
+    VTK::FiltersGeneral
+    VTK::IOImage
+    VTK::IOLegacy
+    VTK::IOXML
+    VTK::RenderingAnnotation
+    VTK::RenderingCore
+    VTK::RenderingOpenGL2
+    VTK::InteractionStyle
+    VTK::InteractionWidgets
+    VTK::GUISupportQt)
+target_link_libraries(QTCAE_PostViewWidgetIntegrationTests PRIVATE
+    Qt6::Widgets ${QTCAE_POST_VIEW_TEST_VTK_LIBRARIES})
+target_compile_features(QTCAE_PostViewWidgetIntegrationTests PRIVATE cxx_std_20)
+target_compile_definitions(QTCAE_PostViewWidgetIntegrationTests PRIVATE
+    QTCAE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/postprocessing")
+if(MSVC)
+    target_compile_options(QTCAE_PostViewWidgetIntegrationTests PRIVATE /utf-8 /FS)
+endif()
+vtk_module_autoinit(
+    TARGETS QTCAE_PostViewWidgetIntegrationTests
+    MODULES ${QTCAE_POST_VIEW_TEST_VTK_LIBRARIES})
+if(WIN32)
+    add_custom_command(TARGET QTCAE_PostViewWidgetIntegrationTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_RUNTIME_DLLS:QTCAE_PostViewWidgetIntegrationTests>
+            $<TARGET_FILE_DIR:QTCAE_PostViewWidgetIntegrationTests>
+        COMMAND_EXPAND_LISTS)
+    if(TARGET Qt6::QWindowsIntegrationPlugin)
+        add_custom_command(TARGET QTCAE_PostViewWidgetIntegrationTests POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:QTCAE_PostViewWidgetIntegrationTests>/plugins/platforms"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:Qt6::QWindowsIntegrationPlugin>
+                "$<TARGET_FILE_DIR:QTCAE_PostViewWidgetIntegrationTests>/plugins/platforms")
+    endif()
+endif()
+add_test(NAME PostViewWidgetIntegration
+         COMMAND QTCAE_PostViewWidgetIntegrationTests)

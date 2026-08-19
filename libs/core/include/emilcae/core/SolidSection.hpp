@@ -19,7 +19,8 @@ enum class SolidSectionError {
     NotFound,
     EmptyName,
     DuplicateName,
-    InvalidMaterial
+    InvalidMaterial,
+    InUse
 };
 
 struct SolidSectionOperationResult {
